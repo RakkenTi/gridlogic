@@ -247,12 +247,23 @@ export class InspectorView {
               <span>Door Open</span>
             </label>
           </div>
+          <label class="sim-cdata-row">
+            <span>PB CustomData (INI)</span>
+            <textarea id="sim-pb-cdata" class="sim-cdata-input" rows="2" spellcheck="false">${this.escapeHtml(this.simInputs.pbCustomData ?? 'minBatt=25\nminO2=65\n')}</textarea>
+          </label>
         </div>
       </div>
     `;
 
     this.simOutputEl = this.bodyEl.querySelector('#sim-output-section');
     this.simArgsEl = this.bodyEl.querySelector('#sim-args-bar');
+
+    const cdataEl = this.bodyEl.querySelector('#sim-pb-cdata') as HTMLTextAreaElement | null;
+    cdataEl?.addEventListener('input', () => {
+      this.simInputs.pbCustomData = cdataEl.value;
+      this.simResult = this.simSession.step(this.project, this.simInputs, '');
+      this.renderSimOutput();
+    });
 
     this.bodyEl.querySelector('#sim-reset-btn')?.addEventListener('click', () => {
       this.simInputs = createDefaultSimInputs();

@@ -17,6 +17,16 @@ interface GenContext {
   issues: ValidationIssue[];
   sameGridOnly: boolean;
   insideGuiScreen: boolean;
+  loopDepth: number;
+  definedFunctions: Map<string, string>;
+}
+
+export function sanitizeMethodName(raw: string): string {
+  const cleaned = String(raw || 'Routine')
+    .trim()
+    .replace(/[^a-zA-Z0-9_]/g, '_')
+    .replace(/^_+/, '');
+  return `Fn_${cleaned || 'Routine'}`;
 }
 
 export function escapeCSharpString(input: string): string {
@@ -72,6 +82,60 @@ function colorExpr(hex: string | number | boolean | undefined, fallback = '#38A3
   return `new Color(${rgb.r}, ${rgb.g}, ${rgb.b})`;
 }
 
+/**
+ * Resolves a numeric literal or `{var}` / `{sensor}` token into a C# double expression.
+ */
+function numericOperandExpr(raw: string | number | boolean | undefined, ctx: GenContext): string {
+  const s = strVal(raw, '0').trim();
+  const m = /^\{([a-zA-Z0-9_]+)\}$/.exec(s);
+  if (m) {
+    const key = m[1];
+    switch (key) {
+      case 'battery':
+        ctx.helpers.add('battery_pct');
+        return 'GetBatteryPercent("")';
+      case 'h2':
+        ctx.helpers.add('gas_pct');
+        return 'GetGasPercent(true, "")';
+      case 'o2':
+        ctx.helpers.add('gas_pct');
+        return 'GetGasPercent(false, "")';
+      case 'cargo':
+        ctx.helpers.add('cargo_pct');
+        return 'GetCargoPercent("")';
+      case 'speed':
+        ctx.helpers.add('ship_speed');
+        return 'GetShipSpeed()';
+      case 'gravity':
+        ctx.helpers.add('gravity_g');
+        return 'GetGravityG()';
+      case 'solar':
+        ctx.helpers.add('solar_mw');
+        return 'GetSolarOutputMW()';
+      case 'reactor':
+        ctx.helpers.add('reactor_mw');
+        return 'GetReactorOutputMW()';
+      case '_value':
+        ctx.helpers.add('loop_state');
+        return '_loopValue';
+      case '_index':
+        ctx.helpers.add('loop_state');
+        return '(double)_loopIndex';
+      case '_count':
+        ctx.helpers.add('loop_state');
+        return '(double)_loopCount';
+      case '_enabled':
+        ctx.helpers.add('loop_state');
+        return '(_loopEnabled ? 1.0 : 0.0)';
+      default:
+        ctx.helpers.add('vars');
+        return `GetVar("${escapeCSharpString(key)}")`;
+    }
+  }
+  const n = Number(s);
+  return Number.isFinite(n) ? String(n) : '0.0';
+}
+
 function guiPercentSourceExpr(source: string, target: string, ctx: GenContext, blockId: string): string {
   switch (source) {
     case 'battery_pct':
@@ -112,6 +176,9 @@ function guiPercentSourceExpr(source: string, target: string, ctx: GenContext, b
       const vn = target.trim() || 'val';
       return `GetVar("${escapeCSharpString(vn)}")`;
     }
+    case 'loop_value':
+      ctx.helpers.add('loop_state');
+      return '_loopValue';
     default:
       return '0.0';
   }
@@ -129,6 +196,16 @@ function templateExpr(text: string, ctx: GenContext): string {
     if (raw.includes('{gravity}')) ctx.helpers.add('gravity_g');
     if (raw.includes('{solar}')) ctx.helpers.add('solar_mw');
     if (raw.includes('{reactor}')) ctx.helpers.add('reactor_mw');
+    if (
+      raw.includes('{_name}') ||
+      raw.includes('{_value}') ||
+      raw.includes('{_index}') ||
+      raw.includes('{_count}') ||
+      raw.includes('{_enabled}') ||
+      raw.includes('{_data}')
+    ) {
+      ctx.helpers.add('loop_state');
+    }
     if (raw.includes('{bar:')) ctx.helpers.add('bar');
     ctx.helpers.add('vars');
     return `FormatTemplate("${escapeCSharpString(raw)}")`;
@@ -136,14 +213,19 @@ function templateExpr(text: string, ctx: GenContext): string {
   return `"${escapeCSharpString(raw)}"`;
 }
 
-function emitConditionExpr(block: ScriptBlock, ctx: GenContext): string {
-  const source = strVal(block.params.source, 'battery_pct') as ConditionSource;
-  const target = strVal(block.params.target).trim();
-  const op = strVal(block.params.operator, '<');
+function emitSingleCondition(
+  blockId: string,
+  source: ConditionSource,
+  target: string,
+  op: string,
+  boolExpect: boolean,
+  rawVal: string,
+  varName: string,
+  itemCategory: string,
+  itemSubtype: string,
+  ctx: GenContext
+): string {
   const safeOp = ['<', '<=', '>', '>=', '==', '!='].includes(op) ? op : '<';
-  const boolExpect = strVal(block.params.boolExpect, 'true') === 'true';
-  const rawVal = strVal(block.params.value, '0');
-  const numericTarget = numVal(rawVal, 0);
 
   if (source === 'argument_equals') {
     const arg = rawVal.trim();
@@ -160,7 +242,7 @@ function emitConditionExpr(block: ScriptBlock, ctx: GenContext): string {
           ctx.issues.push({
             severity: 'warning',
             message: 'If Condition (Door Is Open) needs a Door name.',
-            blockId: block.id,
+            blockId,
           });
         } else {
           addRequiredBlock(ctx, target, 'Door', 'Exact Name', 'Checked if open');
@@ -169,13 +251,7 @@ function emitConditionExpr(block: ScriptBlock, ctx: GenContext): string {
         break;
       case 'connector_connected':
         ctx.helpers.add('connector_state');
-        if (!target) {
-          ctx.issues.push({
-            severity: 'warning',
-            message: 'If Condition (Connector Connected) needs a Connector name.',
-            blockId: block.id,
-          });
-        } else {
+        if (target) {
           addRequiredBlock(ctx, target, 'Connector', 'Exact Name', 'Checked for docked connection');
         }
         expr = `IsConnectorStatus("${escapeCSharpString(target)}", MyShipConnectorStatus.Connected)`;
@@ -191,7 +267,7 @@ function emitConditionExpr(block: ScriptBlock, ctx: GenContext): string {
           ctx.issues.push({
             severity: 'warning',
             message: 'If Condition (Sensor Detecting) needs a Sensor name.',
-            blockId: block.id,
+            blockId,
           });
         } else {
           addRequiredBlock(ctx, target, 'Sensor', 'Exact Name', 'Checked for entity detection');
@@ -213,6 +289,10 @@ function emitConditionExpr(block: ScriptBlock, ctx: GenContext): string {
         ctx.helpers.add('block_enabled');
         if (target) addRequiredBlock(ctx, target, 'Functional Block', 'Exact Name', 'Checked if turned on');
         expr = `IsBlockEnabled("${escapeCSharpString(target)}")`;
+        break;
+      case 'loop_enabled':
+        ctx.helpers.add('loop_state');
+        expr = '_loopEnabled';
         break;
     }
     return boolExpect ? expr : `!${expr}`;
@@ -246,7 +326,7 @@ function emitConditionExpr(block: ScriptBlock, ctx: GenContext): string {
         ctx.issues.push({
           severity: 'warning',
           message: 'If Condition (Air Vent Oxygen %) needs an Air Vent name.',
-          blockId: block.id,
+          blockId,
         });
       } else {
         addRequiredBlock(ctx, target, 'Air Vent', 'Exact Name', 'Monitored room oxygen %');
@@ -280,22 +360,35 @@ function emitConditionExpr(block: ScriptBlock, ctx: GenContext): string {
       break;
     case 'item_count': {
       ctx.helpers.add('item_count');
-      const cat = strVal(block.params.itemCategory, 'MyObjectBuilder_Ingot');
-      const sub = strVal(block.params.itemSubtype, 'Uranium').trim();
+      const sub = itemSubtype.trim();
       if (!sub) {
         ctx.issues.push({
           severity: 'warning',
           message: 'If Condition (Item Amount) needs an Item ID (e.g. Iron, Uranium, SteelPlate).',
-          blockId: block.id,
+          blockId,
         });
       }
-      lhs = `GetItemCount("${escapeCSharpString(cat)}", "${escapeCSharpString(sub)}")`;
+      lhs = `GetItemCount("${escapeCSharpString(itemCategory)}", "${escapeCSharpString(sub)}")`;
       break;
     }
+    case 'loop_value':
+      ctx.helpers.add('loop_state');
+      lhs = '_loopValue';
+      break;
+    case 'loop_index':
+      ctx.helpers.add('loop_state');
+      lhs = '_loopIndex';
+      break;
+    case 'loop_count':
+      ctx.helpers.add('loop_state');
+      lhs = '_loopCount';
+      break;
     case 'variable': {
       ctx.helpers.add('vars');
-      const vn = strVal(block.params.varName, 'state').trim() || 'state';
-      if (Number.isNaN(Number(rawVal)) && (safeOp === '==' || safeOp === '!=')) {
+      const vn = varName.trim() || 'state';
+      const trimmedVal = rawVal.trim();
+      const isVarToken = /^\{[a-zA-Z0-9_]+\}$/.test(trimmedVal);
+      if (!isVarToken && Number.isNaN(Number(trimmedVal)) && (safeOp === '==' || safeOp === '!=')) {
         const cmp = `GetTextVar("${escapeCSharpString(vn)}").Equals("${escapeCSharpString(rawVal)}", StringComparison.OrdinalIgnoreCase)`;
         return safeOp === '==' ? cmp : `!${cmp}`;
       }
@@ -304,7 +397,43 @@ function emitConditionExpr(block: ScriptBlock, ctx: GenContext): string {
     }
   }
 
-  return `${lhs} ${safeOp} ${numericTarget}`;
+  const rhs = numericOperandExpr(rawVal, ctx);
+  return `${lhs} ${safeOp} ${rhs}`;
+}
+
+function emitConditionExpr(block: ScriptBlock, ctx: GenContext): string {
+  const first = emitSingleCondition(
+    block.id,
+    strVal(block.params.source, 'battery_pct') as ConditionSource,
+    strVal(block.params.target).trim(),
+    strVal(block.params.operator, '<'),
+    strVal(block.params.boolExpect, 'true') === 'true',
+    strVal(block.params.value, '0'),
+    strVal(block.params.varName, 'state'),
+    strVal(block.params.itemCategory, 'MyObjectBuilder_Ingot'),
+    strVal(block.params.itemSubtype, 'Uranium'),
+    ctx
+  );
+
+  const join = strVal(block.params.logicJoin, 'none');
+  if (join === 'AND' || join === 'OR') {
+    const second = emitSingleCondition(
+      block.id,
+      strVal(block.params.source2, 'connector_connected') as ConditionSource,
+      strVal(block.params.target2).trim(),
+      strVal(block.params.operator2, '<'),
+      strVal(block.params.boolExpect2, 'false') === 'true',
+      strVal(block.params.value2, '0'),
+      strVal(block.params.varName2, 'state'),
+      'MyObjectBuilder_Ingot',
+      'Uranium',
+      ctx
+    );
+    const op = join === 'AND' ? '&&' : '||';
+    return `(${first}) ${op} (${second})`;
+  }
+
+  return first;
 }
 
 function emitBlockList(blocks: ScriptBlock[], indent: string, ctx: GenContext): string[] {
@@ -565,6 +694,84 @@ function emitBlockList(blocks: ScriptBlock[], indent: string, ctx: GenContext): 
         break;
       }
 
+      case 'define_function':
+        // Emitted as a dedicated method on Program in generateSpaceEngineersScript
+        break;
+
+      case 'call_function': {
+        const rawName = strVal(block.params.name, 'ManagePower').trim();
+        const key = rawName.toLowerCase();
+        const methodName = ctx.definedFunctions.get(key) || sanitizeMethodName(rawName);
+        if (!ctx.definedFunctions.has(key)) {
+          ctx.issues.push({
+            severity: 'warning',
+            message: `Call Function "${rawName || '(empty)'}" has no matching "Define Function" block.`,
+            blockId: block.id,
+          });
+          lines.push(`${indent}// Warning: Define Function "${escapeCSharpString(rawName)}" not found`);
+        } else {
+          lines.push(`${indent}${methodName}();`);
+        }
+        break;
+      }
+
+      case 'for_each_block': {
+        ctx.helpers.add('loop_state');
+        ctx.helpers.add('loop_query');
+        const bType = strVal(block.params.blockType, 'functional');
+        const mMode = strVal(block.params.matchMode, 'tag');
+        const flt = strVal(block.params.filter).trim();
+        const depth = ctx.loopDepth++;
+        const listVar = `_loopList${depth}`;
+        const idxVar = `_li${depth}`;
+
+        const reqMode: RequiredShipBlock['matchMode'] =
+          mMode === 'group' ? 'Group' : mMode === 'tag' ? 'Name Tag' : 'All on Ship';
+        addRequiredBlock(
+          ctx,
+          mMode === 'all' ? `All ${bType}` : flt || `Matching ${bType}`,
+          bType,
+          reqMode,
+          'Iterated in For Each Block loop'
+        );
+
+        lines.push(
+          `${indent}List<IMyTerminalBlock> ${listVar} = QueryLoopBlocks("${escapeCSharpString(bType)}", "${escapeCSharpString(mMode)}", "${escapeCSharpString(flt)}");`
+        );
+        lines.push(`${indent}_loopCount = ${listVar}.Count;`);
+        lines.push(`${indent}for (int ${idxVar} = 0; ${idxVar} < ${listVar}.Count; ${idxVar}++)`);
+        lines.push(`${indent}{`);
+        lines.push(`${indent}    _loopBlock = ${listVar}[${idxVar}];`);
+        lines.push(`${indent}    _loopIndex = ${idxVar};`);
+        lines.push(`${indent}    _loopName = _loopBlock.CustomName;`);
+        lines.push(`${indent}    _loopData = _loopBlock.CustomData;`);
+        lines.push(`${indent}    IMyFunctionalBlock _fb${depth} = _loopBlock as IMyFunctionalBlock;`);
+        lines.push(`${indent}    _loopEnabled = _fb${depth} != null && _fb${depth}.Enabled;`);
+        lines.push(`${indent}    _loopValue = ReadBlockPrimaryValue(_loopBlock);`);
+        const inner = emitBlockList(block.children ?? [], indent + '    ', ctx);
+        if (inner.length > 0) lines.push(...inner);
+        else lines.push(`${indent}    // Add blocks to run for each matching block`);
+        lines.push(`${indent}}`);
+        break;
+      }
+
+      case 'repeat_times': {
+        ctx.helpers.add('vars');
+        const depth = ctx.loopDepth++;
+        const cntExpr = numericOperandExpr(block.params.count, ctx);
+        const iv = strVal(block.params.indexVar, 'i').trim() || 'i';
+        const limVar = `_repMax${depth}`;
+        const idxVar = `_ri${depth}`;
+        lines.push(`${indent}int ${limVar} = Math.Max(0, Math.Min(200, (int)Math.Round(${cntExpr})));`);
+        lines.push(`${indent}for (int ${idxVar} = 0; ${idxVar} < ${limVar}; ${idxVar}++)`);
+        lines.push(`${indent}{`);
+        lines.push(`${indent}    SetVar("${escapeCSharpString(iv)}", ${idxVar});`);
+        const inner = emitBlockList(block.children ?? [], indent + '    ', ctx);
+        if (inner.length > 0) lines.push(...inner);
+        lines.push(`${indent}}`);
+        break;
+      }
+
       case 'cooldown': {
         const sec = Math.max(0.1, numVal(block.params.seconds, 5));
         const timerIndex = ctx.cooldownTimers.length + 1;
@@ -588,8 +795,11 @@ function emitBlockList(blocks: ScriptBlock[], indent: string, ctx: GenContext): 
           lines.push(
             `${indent}SetTextVar("${escapeCSharpString(vn)}", ${templateExpr(strVal(block.params.value), ctx)});`
           );
+        } else if (src === 'loop_name') {
+          ctx.helpers.add('loop_state');
+          lines.push(`${indent}SetTextVar("${escapeCSharpString(vn)}", _loopName);`);
         } else if (src === 'number') {
-          lines.push(`${indent}SetVar("${escapeCSharpString(vn)}", ${numVal(block.params.value, 0)});`);
+          lines.push(`${indent}SetVar("${escapeCSharpString(vn)}", ${numericOperandExpr(block.params.value, ctx)});`);
         } else {
           let expr = '0.0';
           switch (src) {
@@ -639,9 +849,64 @@ function emitBlockList(blocks: ScriptBlock[], indent: string, ctx: GenContext): 
               expr = `GetItemCount("${escapeCSharpString(cat)}", "${escapeCSharpString(sub)}")`;
               break;
             }
+            case 'loop_value':
+              ctx.helpers.add('loop_state');
+              expr = '_loopValue';
+              break;
+            case 'loop_index':
+              ctx.helpers.add('loop_state');
+              expr = '(double)_loopIndex';
+              break;
+            case 'loop_count':
+              ctx.helpers.add('loop_state');
+              expr = '(double)_loopCount';
+              break;
+            case 'loop_enabled':
+              ctx.helpers.add('loop_state');
+              expr = '(_loopEnabled ? 1.0 : 0.0)';
+              break;
           }
           lines.push(`${indent}SetVar("${escapeCSharpString(vn)}", ${expr});`);
         }
+        break;
+      }
+
+      case 'math_op': {
+        ctx.helpers.add('vars');
+        const dest = strVal(block.params.destVar, 'result').trim() || 'result';
+        const leftExpr = numericOperandExpr(block.params.left, ctx);
+        const rightExpr = numericOperandExpr(block.params.right, ctx);
+        const op = strVal(block.params.op, '+');
+        let rhs = '0.0';
+        switch (op) {
+          case '+':
+            rhs = `(${leftExpr}) + (${rightExpr})`;
+            break;
+          case '-':
+            rhs = `(${leftExpr}) - (${rightExpr})`;
+            break;
+          case '*':
+            rhs = `(${leftExpr}) * (${rightExpr})`;
+            break;
+          case '/':
+            rhs = `((${rightExpr}) != 0.0 ? ((${leftExpr}) / (${rightExpr})) : 0.0)`;
+            break;
+          case '%':
+            rhs = `((${rightExpr}) != 0.0 ? ((${leftExpr}) % (${rightExpr})) : 0.0)`;
+            break;
+          case 'min':
+            rhs = `Math.Min(${leftExpr}, ${rightExpr})`;
+            break;
+          case 'max':
+            rhs = `Math.Max(${leftExpr}, ${rightExpr})`;
+            break;
+          case 'round':
+            rhs = `Math.Round(${leftExpr})`;
+            break;
+          default:
+            rhs = `(${leftExpr}) + (${rightExpr})`;
+        }
+        lines.push(`${indent}SetVar("${escapeCSharpString(dest)}", ${rhs});`);
         break;
       }
 
@@ -650,6 +915,118 @@ function emitBlockList(blocks: ScriptBlock[], indent: string, ctx: GenContext): 
         const vn = strVal(block.params.varName, 'counter').trim() || 'counter';
         const delta = numVal(block.params.delta, 1);
         lines.push(`${indent}SetVar("${escapeCSharpString(vn)}", GetVar("${escapeCSharpString(vn)}") + (${delta}));`);
+        break;
+      }
+
+      case 'read_block_prop': {
+        ctx.helpers.add('vars');
+        ctx.helpers.add('read_block_prop');
+        const vn = strVal(block.params.varName, 'val').trim() || 'val';
+        const mode = strVal(block.params.targetMode, 'named');
+        const bName = strVal(block.params.blockName).trim();
+        const prop = strVal(block.params.property, 'enabled');
+
+        if (mode === 'tag_count') {
+          if (bName) addRequiredBlock(ctx, bName, 'Terminal Block', 'Name Tag', 'Counted by tag');
+          lines.push(`${indent}SetVar("${escapeCSharpString(vn)}", CountBlocksByTag("${escapeCSharpString(bName)}"));`);
+        } else {
+          const blkRef =
+            mode === 'loop'
+              ? (ctx.helpers.add('loop_state'), '_loopBlock')
+              : `GridTerminalSystem.GetBlockWithName("${escapeCSharpString(bName)}")`;
+          if (mode === 'named' && bName) {
+            addRequiredBlock(ctx, bName, 'Terminal Block', 'Exact Name', `Read property: ${prop}`);
+          }
+          if (prop === 'custom_data') {
+            lines.push(
+              `${indent}SetTextVar("${escapeCSharpString(vn)}", ReadBlockCustomData(${blkRef}));`
+            );
+          } else {
+            lines.push(
+              `${indent}SetVar("${escapeCSharpString(vn)}", ReadBlockProp(${blkRef}, "${escapeCSharpString(prop)}"));`
+            );
+          }
+        }
+        break;
+      }
+
+      case 'custom_data_io': {
+        ctx.helpers.add('vars');
+        ctx.helpers.add('custom_data_ini');
+        const mode = strVal(block.params.mode, 'read_ini');
+        const target = strVal(block.params.target, 'self');
+        const bName = strVal(block.params.blockName).trim();
+        const iniKey = strVal(block.params.iniKey, 'minBatt').trim();
+        const vn = strVal(block.params.varName, 'minBatt').trim() || 'minBatt';
+        const fbOrTxt = strVal(block.params.fallbackOrText, '25');
+
+        const blkRef =
+          target === 'self'
+            ? 'Me'
+            : target === 'loop'
+            ? (ctx.helpers.add('loop_state'), '_loopBlock')
+            : `GridTerminalSystem.GetBlockWithName("${escapeCSharpString(bName)}")`;
+        if (target === 'named' && bName) {
+          addRequiredBlock(ctx, bName, 'Terminal Block', 'Exact Name', 'CustomData I/O');
+        }
+
+        if (mode === 'write') {
+          lines.push(`${indent}if (${blkRef} != null) ${blkRef}.CustomData = ${templateExpr(fbOrTxt, ctx)};`);
+        } else if (mode === 'read_all') {
+          lines.push(
+            `${indent}SetTextVar("${escapeCSharpString(vn)}", ${blkRef} != null ? ${blkRef}.CustomData : "");`
+          );
+        } else {
+          lines.push(
+            `${indent}ReadIniIntoVar(${blkRef}, "${escapeCSharpString(iniKey)}", "${escapeCSharpString(vn)}", "${escapeCSharpString(fbOrTxt)}");`
+          );
+        }
+        break;
+      }
+
+      case 'loop_block_action': {
+        ctx.helpers.add('loop_state');
+        ctx.helpers.add('loop_block_action');
+        const act = strVal(block.params.action, 'off');
+        const col = colorExpr(block.params.color, '#FF3B30');
+        const idStr = strVal(block.params.actionOrProp, 'OnOff_Off').trim();
+        const valTextExpr = templateExpr(strVal(block.params.value, ''), ctx);
+        const valNumExpr = numericOperandExpr(block.params.value, ctx);
+        lines.push(
+          `${indent}RunLoopBlockAction(_loopBlock, "${escapeCSharpString(act)}", ${col}, "${escapeCSharpString(idStr)}", ${valTextExpr}, ${valNumExpr});`
+        );
+        break;
+      }
+
+      case 'terminal_action': {
+        ctx.helpers.add('terminal_action');
+        const tMode = strVal(block.params.targetMode, 'block');
+        const name = strVal(block.params.name).trim();
+        const opKind = strVal(block.params.opKind, 'action');
+        const propId = strVal(block.params.propId, 'ShootOnce').trim();
+        const rawVal = strVal(block.params.value, '0').trim();
+        const numExpr = numericOperandExpr(rawVal, ctx);
+        const boolLit = rawVal.toLowerCase() === 'true' || rawVal === '1' ? 'true' : 'false';
+
+        if (tMode === 'loop') {
+          ctx.helpers.add('loop_state');
+          lines.push(
+            `${indent}RunTerminalOpOnBlock(_loopBlock, "${escapeCSharpString(opKind)}", "${escapeCSharpString(propId)}", ${numExpr}, ${boolLit});`
+          );
+        } else {
+          if (name) {
+            addRequiredBlock(
+              ctx,
+              name,
+              'Terminal Block',
+              tMode === 'group' ? 'Group' : tMode === 'tag' ? 'Name Tag' : 'Exact Name',
+              `Terminal ${opKind}: ${propId}`
+            );
+          }
+          lines.push(
+            `${indent}RunTerminalOp("${escapeCSharpString(tMode)}", "${escapeCSharpString(name)}", "${escapeCSharpString(opKind)}", "${escapeCSharpString(propId)}", ${numExpr}, ${boolLit});`
+          );
+        }
         break;
       }
 
@@ -1812,6 +2189,222 @@ void WriteToLcd(string name, string text, bool append)
         else rotors[i].RotorLock = false;
     }
 }`,
+
+  loop_query: `List<IMyTerminalBlock> QueryLoopBlocks(string blockType, string matchMode, string filter)
+{
+    List<IMyTerminalBlock> raw = new List<IMyTerminalBlock>();
+    if (matchMode == "group")
+    {
+        IMyBlockGroup grp = GridTerminalSystem.GetBlockGroupWithName(filter);
+        if (grp != null) grp.GetBlocks(raw);
+    }
+    else
+    {
+        GridTerminalSystem.GetBlocks(raw);
+    }
+    List<IMyTerminalBlock> matched = new List<IMyTerminalBlock>();
+    for (int i = 0; i < raw.Count; i++)
+    {
+        IMyTerminalBlock b = raw[i];
+        if (!IsMyGrid(b)) continue;
+        if (matchMode == "tag" && !string.IsNullOrEmpty(filter) && b.CustomName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+        if (MatchesBlockKind(b, blockType)) matched.Add(b);
+    }
+    return matched;
+}
+
+bool MatchesBlockKind(IMyTerminalBlock b, string blockType)
+{
+    if (blockType == "door") return b is IMyDoor;
+    if (blockType == "airvent") return b is IMyAirVent;
+    if (blockType == "light") return b is IMyLightingBlock;
+    if (blockType == "battery") return b is IMyBatteryBlock;
+    if (blockType == "gastank") return b is IMyGasTank;
+    if (blockType == "cargo") return b is IMyCargoContainer;
+    if (blockType == "reactor") return b is IMyReactor;
+    if (blockType == "solar") return b is IMySolarPanel;
+    if (blockType == "thruster") return b is IMyThrust;
+    if (blockType == "piston") return b is IMyPistonBase;
+    if (blockType == "rotor") return b is IMyMotorStator;
+    if (blockType == "turret") return b is IMyLargeTurretBase;
+    if (blockType == "assembler") return b is IMyAssembler;
+    if (blockType == "refinery") return b is IMyRefinery;
+    if (blockType == "connector") return b is IMyShipConnector;
+    if (blockType == "lcd") return b is IMyTextPanel;
+    return b is IMyFunctionalBlock;
+}
+
+double ReadBlockPrimaryValue(IMyTerminalBlock b)
+{
+    if (b == null) return 0.0;
+    IMyBatteryBlock bat = b as IMyBatteryBlock;
+    if (bat != null) return bat.MaxStoredPower > 0f ? (bat.CurrentStoredPower / bat.MaxStoredPower) * 100.0 : 0.0;
+    IMyGasTank tank = b as IMyGasTank;
+    if (tank != null) return tank.FilledRatio * 100.0;
+    IMyAirVent vent = b as IMyAirVent;
+    if (vent != null) return vent.GetOxygenLevel() * 100.0;
+    IMyDoor door = b as IMyDoor;
+    if (door != null) return door.OpenRatio * 100.0;
+    IMyCargoContainer cargo = b as IMyCargoContainer;
+    if (cargo != null) { IMyInventory inv = cargo.GetInventory(0); return inv != null && (double)inv.MaxVolume > 0.0 ? ((double)inv.CurrentVolume / (double)inv.MaxVolume) * 100.0 : 0.0; }
+    IMyPowerProducer prod = b as IMyPowerProducer;
+    if (prod != null) return (double)prod.CurrentOutput;
+    IMyPistonBase pis = b as IMyPistonBase;
+    if (pis != null) return (double)pis.CurrentPosition;
+    IMyMotorStator rot = b as IMyMotorStator;
+    if (rot != null) return (double)(rot.Angle * 180f / (float)Math.PI);
+    IMyFunctionalBlock fb = b as IMyFunctionalBlock;
+    return (fb != null && fb.Enabled) ? 1.0 : 0.0;
+}`,
+
+  read_block_prop: `double ReadBlockProp(IMyTerminalBlock b, string prop)
+{
+    if (b == null) return 0.0;
+    IMyFunctionalBlock fb = b as IMyFunctionalBlock;
+    if (prop == "enabled") return (fb != null && fb.Enabled) ? 1.0 : 0.0;
+    if (prop == "working") return b.IsWorking ? 1.0 : 0.0;
+    if (prop == "power_out") { IMyPowerProducer pp = b as IMyPowerProducer; return pp != null ? (double)pp.CurrentOutput : 0.0; }
+    if (prop == "power_in") { IMyBatteryBlock bt = b as IMyBatteryBlock; return bt != null ? (double)bt.CurrentInput : 0.0; }
+    if (prop == "door_ratio") { IMyDoor d = b as IMyDoor; return d != null ? d.OpenRatio * 100.0 : 0.0; }
+    if (prop == "vent_o2") { IMyAirVent v = b as IMyAirVent; return v != null ? v.GetOxygenLevel() * 100.0 : 0.0; }
+    if (prop == "piston_pos") { IMyPistonBase p = b as IMyPistonBase; return p != null ? (double)p.CurrentPosition : 0.0; }
+    if (prop == "rotor_deg") { IMyMotorStator r = b as IMyMotorStator; return r != null ? (double)(r.Angle * 180f / (float)Math.PI) : 0.0; }
+    IMyBatteryBlock bat = b as IMyBatteryBlock;
+    if (bat != null) return bat.MaxStoredPower > 0f ? (bat.CurrentStoredPower / bat.MaxStoredPower) * 100.0 : 0.0;
+    IMyGasTank tank = b as IMyGasTank;
+    if (tank != null) return tank.FilledRatio * 100.0;
+    IMyCargoContainer cg = b as IMyCargoContainer;
+    if (cg != null) { IMyInventory inv = cg.GetInventory(0); return inv != null && (double)inv.MaxVolume > 0.0 ? ((double)inv.CurrentVolume / (double)inv.MaxVolume) * 100.0 : 0.0; }
+    return (fb != null && fb.Enabled) ? 1.0 : 0.0;
+}
+
+string ReadBlockCustomData(IMyTerminalBlock b)
+{
+    return b != null ? b.CustomData : "";
+}
+
+double CountBlocksByTag(string tag)
+{
+    List<IMyTerminalBlock> list = new List<IMyTerminalBlock>();
+    GridTerminalSystem.GetBlocks(list);
+    int c = 0;
+    for (int i = 0; i < list.Count; i++)
+    {
+        if (IsMyGrid(list[i]) && (string.IsNullOrEmpty(tag) || list[i].CustomName.IndexOf(tag, StringComparison.OrdinalIgnoreCase) >= 0)) c++;
+    }
+    return (double)c;
+}`,
+
+  custom_data_ini: `void ReadIniIntoVar(IMyTerminalBlock blk, string key, string varName, string fallback)
+{
+    string found = fallback;
+    if (blk != null && !string.IsNullOrEmpty(blk.CustomData))
+    {
+        string[] rawLines = blk.CustomData.Split('\\n');
+        for (int i = 0; i < rawLines.Length; i++)
+        {
+            string ln = rawLines[i].Trim();
+            if (ln.Length == 0 || ln.StartsWith("#") || ln.StartsWith(";")) continue;
+            int eq = ln.IndexOf('=');
+            if (eq > 0 && ln.Substring(0, eq).Trim().Equals(key, StringComparison.OrdinalIgnoreCase))
+            {
+                found = ln.Substring(eq + 1).Trim();
+                break;
+            }
+        }
+    }
+    double parsed;
+    if (double.TryParse(found, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out parsed))
+    {
+        SetVar(varName, parsed);
+    }
+    else
+    {
+        SetTextVar(varName, found);
+    }
+}`,
+
+  loop_block_action: `void RunLoopBlockAction(IMyTerminalBlock blk, string action, Color color, string actionOrProp, string valueText, double numVal)
+{
+    if (blk == null) return;
+    if (action == "on" || action == "off" || action == "toggle")
+    {
+        IMyFunctionalBlock fb = blk as IMyFunctionalBlock;
+        if (fb != null) fb.Enabled = action == "on" ? true : action == "off" ? false : !fb.Enabled;
+    }
+    else if (action == "door_open" || action == "door_close")
+    {
+        IMyDoor d = blk as IMyDoor;
+        if (d != null) { if (action == "door_open") d.OpenDoor(); else d.CloseDoor(); }
+    }
+    else if (action == "battery_auto" || action == "battery_recharge")
+    {
+        IMyBatteryBlock bat = blk as IMyBatteryBlock;
+        if (bat != null) bat.ChargeMode = action == "battery_recharge" ? ChargeMode.Recharge : ChargeMode.Auto;
+    }
+    else if (action == "light_color")
+    {
+        IMyLightingBlock lt = blk as IMyLightingBlock;
+        if (lt != null) { lt.Enabled = true; lt.Color = color; }
+    }
+    else if (action == "custom_data")
+    {
+        blk.CustomData = valueText;
+    }
+    else if (action == "terminal_action")
+    {
+        ITerminalAction ta = blk.GetActionWithName(actionOrProp);
+        if (ta != null) ta.Apply(blk);
+    }
+    else if (action == "terminal_float")
+    {
+        if (blk.GetProperty(actionOrProp) != null) blk.SetValue<float>(actionOrProp, (float)numVal);
+    }
+}`,
+
+  terminal_action: `void RunTerminalOpOnBlock(IMyTerminalBlock blk, string opKind, string propId, double numVal, bool boolVal)
+{
+    if (blk == null || string.IsNullOrEmpty(propId)) return;
+    if (opKind == "action")
+    {
+        ITerminalAction act = blk.GetActionWithName(propId);
+        if (act != null) act.Apply(blk);
+    }
+    else if (opKind == "float")
+    {
+        if (blk.GetProperty(propId) != null) blk.SetValue<float>(propId, (float)numVal);
+    }
+    else if (opKind == "bool")
+    {
+        if (blk.GetProperty(propId) != null) blk.SetValue<bool>(propId, boolVal);
+    }
+}
+
+void RunTerminalOp(string mode, string name, string opKind, string propId, double numVal, bool boolVal)
+{
+    List<IMyTerminalBlock> list = new List<IMyTerminalBlock>();
+    if (mode == "group")
+    {
+        IMyBlockGroup grp = GridTerminalSystem.GetBlockGroupWithName(name);
+        if (grp != null) grp.GetBlocks(list);
+    }
+    else if (mode == "tag")
+    {
+        GridTerminalSystem.GetBlocks(list);
+    }
+    else
+    {
+        IMyTerminalBlock single = GridTerminalSystem.GetBlockWithName(name);
+        if (single != null) list.Add(single);
+    }
+    for (int i = 0; i < list.Count; i++)
+    {
+        IMyTerminalBlock b = list[i];
+        if (!IsMyGrid(b)) continue;
+        if (mode == "tag" && !string.IsNullOrEmpty(name) && b.CustomName.IndexOf(name, StringComparison.OrdinalIgnoreCase) < 0) continue;
+        RunTerminalOpOnBlock(b, opKind, propId, numVal, boolVal);
+    }
+}`,
 };
 
 function buildHelpers(ctx: GenContext): string[] {
@@ -1847,6 +2440,14 @@ function buildHelpers(ctx: GenContext): string[] {
     if (h.has('gravity_g')) t.push('    if (result.Contains("{gravity}")) result = result.Replace("{gravity}", GetGravityG().ToString("0.00"));');
     if (h.has('solar_mw')) t.push('    if (result.Contains("{solar}")) result = result.Replace("{solar}", GetSolarOutputMW().ToString("0.00"));');
     if (h.has('reactor_mw')) t.push('    if (result.Contains("{reactor}")) result = result.Replace("{reactor}", GetReactorOutputMW().ToString("0.00"));');
+    if (h.has('loop_state')) {
+      t.push('    if (result.Contains("{_name}")) result = result.Replace("{_name}", _loopName);');
+      t.push('    if (result.Contains("{_value}")) result = result.Replace("{_value}", _loopValue.ToString("0.#"));');
+      t.push('    if (result.Contains("{_index}")) result = result.Replace("{_index}", _loopIndex.ToString());');
+      t.push('    if (result.Contains("{_count}")) result = result.Replace("{_count}", _loopCount.ToString());');
+      t.push('    if (result.Contains("{_enabled}")) result = result.Replace("{_enabled}", _loopEnabled ? "1" : "0");');
+      t.push('    if (result.Contains("{_data}")) result = result.Replace("{_data}", _loopData);');
+    }
     t.push(
       `    foreach (KeyValuePair<string, string> kv in _strVars) { result = result.Replace("{" + kv.Key + "}", kv.Value);${h.has('bar') ? ' if (result.Contains("{bar:" + kv.Key + "}")) result = result.Replace("{bar:" + kv.Key + "}", BuildBar(GetVar(kv.Key), 12));' : ''} }`
     );
@@ -1869,6 +2470,11 @@ function buildHelpers(ctx: GenContext): string[] {
     'lcd_inventory',
     'lcd_power',
     'lcd_gas',
+    'loop_query',
+    'read_block_prop',
+    'custom_data_ini',
+    'loop_block_action',
+    'terminal_action',
     'battery_pct',
     'gas_pct',
     'cargo_pct',
@@ -1915,7 +2521,20 @@ export function generateSpaceEngineersScript(project: ScriptProject): GeneratedS
     issues: [],
     sameGridOnly: project.sameGridOnly,
     insideGuiScreen: false,
+    loopDepth: 0,
+    definedFunctions: new Map<string, string>(),
   };
+
+  // Pre-register all user-defined functions so Call Function can resolve them in any order
+  const fnBlocks: Array<{ block: ScriptBlock; methodName: string }> = [];
+  for (const b of project.blocks) {
+    if (!b.disabled && b.type === 'define_function') {
+      const rawName = strVal(b.params.name, 'Routine').trim() || 'Routine';
+      const methodName = sanitizeMethodName(rawName);
+      ctx.definedFunctions.set(rawName.toLowerCase(), methodName);
+      fnBlocks.push({ block: b, methodName });
+    }
+  }
 
   const setupLines: string[] = [];
   for (const b of project.blocks) {
@@ -1925,6 +2544,17 @@ export function generateSpaceEngineersScript(project: ScriptProject): GeneratedS
   }
 
   const mainLines = emitBlockList(project.blocks, '    ', ctx);
+
+  const fnMethodLines: string[] = [];
+  for (const entry of fnBlocks) {
+    const body = emitBlockList(entry.block.children ?? [], '    ', ctx);
+    fnMethodLines.push(`void ${entry.methodName}()`);
+    fnMethodLines.push(`{`);
+    if (body.length > 0) fnMethodLines.push(...body);
+    else fnMethodLines.push(`    // Add blocks inside this function`);
+    fnMethodLines.push(`}`);
+    fnMethodLines.push(``);
+  }
 
   const lines: string[] = [];
   lines.push(`// ============================================================`);
@@ -1941,6 +2571,15 @@ export function generateSpaceEngineersScript(project: ScriptProject): GeneratedS
   if (ctx.helpers.has('vars')) {
     lines.push(`Dictionary<string, double> _numVars = new Dictionary<string, double>();`);
     lines.push(`Dictionary<string, string> _strVars = new Dictionary<string, string>();`);
+  }
+  if (ctx.helpers.has('loop_state')) {
+    lines.push(`IMyTerminalBlock _loopBlock = null;`);
+    lines.push(`string _loopName = "";`);
+    lines.push(`double _loopValue = 0.0;`);
+    lines.push(`int _loopIndex = 0;`);
+    lines.push(`int _loopCount = 0;`);
+    lines.push(`bool _loopEnabled = false;`);
+    lines.push(`string _loopData = "";`);
   }
   for (const timerField of ctx.cooldownTimers) {
     lines.push(`double ${timerField} = 0.0;`);
@@ -1967,6 +2606,12 @@ export function generateSpaceEngineersScript(project: ScriptProject): GeneratedS
     lines.push(...mainLines);
   }
   lines.push(`}`);
+
+  if (fnMethodLines.length > 0) {
+    lines.push(``);
+    lines.push(`// -------------------- SCRIPT FUNCTIONS --------------------`);
+    lines.push(...fnMethodLines);
+  }
 
   const helperLines = buildHelpers(ctx);
   if (helperLines.length > 0) {

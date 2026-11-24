@@ -80,18 +80,25 @@ export class PresetsModal {
 
   private renderCard(preset: PresetScript): string {
     const blocks = countAllBlocks(preset.project.blocks);
+    const nativeBadge =
+      preset.tier === 'native'
+        ? '<span class="preset-native-tag">100% NATIVE</span>'
+        : '';
     return `
-      <article class="preset-card">
+      <article class="preset-card ${preset.tier === 'native' ? 'is-native' : ''}">
         <div class="preset-card-top">
           <span class="preset-cat">${preset.category}</span>
-          <span class="preset-diff diff-${preset.difficulty.toLowerCase()}">${preset.difficulty}</span>
+          <span class="preset-top-right">
+            ${nativeBadge}
+            <span class="preset-diff diff-${preset.difficulty.toLowerCase()}">${preset.difficulty}</span>
+          </span>
         </div>
         <h3 class="preset-name">${preset.name}</h3>
         <p class="preset-summary">${preset.summary}</p>
-        <div class="preset-hint"><strong>In-Game Blocks:</strong> ${preset.setupHint}</div>
+        <div class="preset-hint"><strong>Setup:</strong> ${preset.setupHint}</div>
         <div class="preset-card-footer">
           <span class="preset-meta">${blocks} blocks · ${preset.project.updateFrequency}</span>
-          <button type="button" class="btn btn-sm btn-primary" data-load-preset="${preset.id}">Load Script</button>
+          <button type="button" class="btn btn-sm btn-primary" data-load-preset="${preset.id}">Load</button>
         </div>
       </article>
     `;

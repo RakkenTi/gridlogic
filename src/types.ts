@@ -1,10 +1,11 @@
 export type BlockCategory =
-  | 'gui'
   | 'control'
-  | 'display'
+  | 'data'
+  | 'gui'
   | 'habitat'
   | 'systems'
-  | 'automation';
+  | 'automation'
+  | 'display';
 
 export type UpdateFrequencyOption =
   | 'Update100'
@@ -13,6 +14,22 @@ export type UpdateFrequencyOption =
   | 'None';
 
 export type BlockType =
+  // Flow, Loops & Subroutines (Native)
+  | 'if_condition'
+  | 'for_each_block'
+  | 'repeat_times'
+  | 'define_function'
+  | 'call_function'
+  | 'on_argument'
+  | 'on_setup'
+  | 'cooldown'
+  | 'comment'
+  // Data, Math & Native Block Inspection
+  | 'set_variable'
+  | 'math_op'
+  | 'change_variable'
+  | 'read_block_prop'
+  | 'custom_data_io'
   // Modern Vector GUI Screens (MySpriteDrawFrame)
   | 'gui_screen'
   | 'gui_header'
@@ -23,14 +40,6 @@ export type BlockType =
   | 'gui_inventory'
   | 'gui_text'
   | 'gui_divider'
-  // Control & Logic
-  | 'on_argument'
-  | 'on_setup'
-  | 'if_condition'
-  | 'cooldown'
-  | 'set_variable'
-  | 'change_variable'
-  | 'comment'
   // Classic Text Displays & Console
   | 'lcd_inventory'
   | 'lcd_power'
@@ -49,7 +58,9 @@ export type BlockType =
   | 'tank_stockpile'
   | 'connector_action'
   | 'thruster_override'
-  // Automation & Mechanics
+  // Automation, Loop Control & Universal Terminal Escape Hatch
+  | 'loop_block_action'
+  | 'terminal_action'
   | 'sound_action'
   | 'timer_action'
   | 'broadcast_text'
@@ -69,6 +80,10 @@ export type ConditionSource =
   | 'reactor_mw'
   | 'projector_remaining'
   | 'variable'
+  | 'loop_value'
+  | 'loop_enabled'
+  | 'loop_index'
+  | 'loop_count'
   | 'door_is_open'
   | 'connector_connected'
   | 'connector_ready'
@@ -162,8 +177,15 @@ export interface GeneratedScriptResult {
 export interface PresetScript {
   id: string;
   name: string;
-  category: 'Telemetry & HUD' | 'Inventory & Cargo' | 'Airlocks & Safety' | 'Power & Docking' | 'Combat & Alerts';
+  category:
+    | 'Native Logic'
+    | 'Telemetry & HUD'
+    | 'Inventory & Cargo'
+    | 'Airlocks & Safety'
+    | 'Power & Docking'
+    | 'Combat & Alerts';
   difficulty: 'Beginner' | 'Intermediate' | 'Advanced';
+  tier?: 'native' | 'starter';
   summary: string;
   setupHint: string;
   project: ScriptProject;
@@ -270,6 +292,7 @@ export interface SimShipInputs {
   sensorActive: boolean;
   turretHasTarget: boolean;
   inventory: SimInventoryItem[];
+  pbCustomData?: string;
 }
 
 export interface SimBlockStatus {

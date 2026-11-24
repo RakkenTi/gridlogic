@@ -45,7 +45,16 @@ export function createDefaultSimInputs(): SimShipInputs {
       { category: 'Ammo', subtype: 'NATO_25x184mm', displayName: 'NATO_25x184mm', amount: 96 },
       { category: 'Ammo', subtype: 'Missile200mm', displayName: 'Missile200mm', amount: 24 },
     ],
+    pbCustomData: 'minBatt=25\nminO2=65\nauxTag=[Aux]\n',
   };
+}
+
+interface SimVirtualBlock {
+  name: string;
+  kind: string;
+  value: number;
+  enabled: boolean;
+  data: string;
 }
 
 export function buildAsciiBar(percent: number, width: number): string {
@@ -80,9 +89,21 @@ export class ShipSimulatorSession {
   private lcds: Record<string, SimLcdScreen> = {};
   private blocks: Record<string, SimBlockStatus> = {};
   private enabledBlocks: Record<string, boolean> = {};
+  private blockCustomData: Record<string, string> = {};
   private activeGuiOps: SimGuiOp[] | null = null;
   private initialized = false;
   private ticksRun = 0;
+
+  // Native loop & function runtime state
+  private loopName = '';
+  private loopValue = 0;
+  private loopIndex = 0;
+  private loopCount = 0;
+  private loopEnabled = false;
+  private loopData = '';
+  private loopKind = 'functional';
+  private functionsMap = new Map<string, ScriptBlock[]>();
+  private callDepth = 0;
 
   reset(): void {
     this.numVars = {};
@@ -91,9 +112,16 @@ export class ShipSimulatorSession {
     this.lcds = {};
     this.blocks = {};
     this.enabledBlocks = {};
+    this.blockCustomData = {};
     this.activeGuiOps = null;
     this.initialized = false;
     this.ticksRun = 0;
+    this.loopName = '';
+    this.loopValue = 0;
+    this.loopIndex = 0;
+    this.loopCount = 0;
+    this.loopEnabled = false;
+    this.loopData = '';
   }
 
   step(
@@ -103,6 +131,16 @@ export class ShipSimulatorSession {
     deltaSeconds = 1.66
   ): SimExecutionResult {
     const echoLog: string[] = [];
+
+    // Register defined functions before running setup or main
+    this.functionsMap.clear();
+    for (const b of project.blocks) {
+      if (!b.disabled && b.type === 'define_function') {
+        const key = String(b.params.name ?? 'Routine').trim().toLowerCase();
+        if (key) this.functionsMap.set(key, b.children ?? []);
+      }
+    }
+    this.callDepth = 0;
 
     if (!this.initialized) {
       this.initialized = true;
@@ -132,6 +170,93 @@ export class ShipSimulatorSession {
       echoLog,
       ticksRun: this.ticksRun,
     };
+  }
+
+  private getVirtualGridBlocks(inputs: SimShipInputs): SimVirtualBlock[] {
+    const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n * 10) / 10));
+    const isEnabled = (name: string, def = true) => {
+      const k = name.toLowerCase();
+      return k in this.enabledBlocks ? this.enabledBlocks[k] : def;
+    };
+    const getData = (name: string, def = '') => this.blockCustomData[name.toLowerCase()] ?? def;
+
+    return [
+      { name: 'Battery 1 (Core)', kind: 'battery', value: clamp(inputs.batteryPct + 8), enabled: isEnabled('Battery 1 (Core)'), data: getData('Battery 1 (Core)', 'bank=A') },
+      { name: 'Battery 2 (Port)', kind: 'battery', value: clamp(inputs.batteryPct - 4), enabled: isEnabled('Battery 2 (Port)'), data: getData('Battery 2 (Port)', 'bank=A') },
+      { name: 'Battery 3 (Stbd)', kind: 'battery', value: clamp(inputs.batteryPct + 2), enabled: isEnabled('Battery 3 (Stbd)'), data: getData('Battery 3 (Stbd)', 'bank=B') },
+      { name: 'Battery 4 (Aux)', kind: 'battery', value: clamp(inputs.batteryPct - 11), enabled: isEnabled('Battery 4 (Aux)'), data: getData('Battery 4 (Aux)', 'bank=B') },
+      { name: '[Auto] Bridge Door', kind: 'door', value: inputs.doorOpen ? 100 : 0, enabled: isEnabled('[Auto] Bridge Door'), data: getData('[Auto] Bridge Door') },
+      { name: '[Auto] Hangar Door', kind: 'door', value: inputs.doorOpen ? 100 : 0, enabled: isEnabled('[Auto] Hangar Door'), data: getData('[Auto] Hangar Door') },
+      { name: 'Airlock Outer Door', kind: 'door', value: 0, enabled: isEnabled('Airlock Outer Door'), data: getData('Airlock Outer Door') },
+      { name: 'Bridge Vent', kind: 'airvent', value: clamp(inputs.ventO2Pct), enabled: isEnabled('Bridge Vent'), data: getData('Bridge Vent') },
+      { name: 'Medbay Vent', kind: 'airvent', value: clamp(Math.min(100, inputs.ventO2Pct + 6)), enabled: isEnabled('Medbay Vent'), data: getData('Medbay Vent') },
+      { name: 'Airlock Vent', kind: 'airvent', value: clamp(Math.max(0, inputs.ventO2Pct - 8)), enabled: isEnabled('Airlock Vent'), data: getData('Airlock Vent') },
+      { name: 'Assembler [Aux]', kind: 'assembler', value: isEnabled('Assembler [Aux]') ? 1 : 0, enabled: isEnabled('Assembler [Aux]'), data: getData('Assembler [Aux]', 'priority=low') },
+      { name: 'Refinery [Aux]', kind: 'refinery', value: isEnabled('Refinery [Aux]') ? 1 : 0, enabled: isEnabled('Refinery [Aux]'), data: getData('Refinery [Aux]', 'priority=low') },
+      { name: 'Floodlight [Aux]', kind: 'light', value: isEnabled('Floodlight [Aux]') ? 1 : 0, enabled: isEnabled('Floodlight [Aux]'), data: getData('Floodlight [Aux]', 'priority=low') },
+      { name: 'Large Cargo 1', kind: 'cargo', value: clamp(inputs.cargoPct + 9), enabled: true, data: getData('Large Cargo 1') },
+      { name: 'Large Cargo 2', kind: 'cargo', value: clamp(inputs.cargoPct - 9), enabled: true, data: getData('Large Cargo 2') },
+      { name: 'Hydrogen Tank 1', kind: 'gastank', value: clamp(inputs.h2Pct), enabled: true, data: getData('Hydrogen Tank 1') },
+      { name: 'Oxygen Tank 1', kind: 'gastank', value: clamp(inputs.o2Pct), enabled: true, data: getData('Oxygen Tank 1') },
+      { name: 'Solar Array 1', kind: 'solar', value: inputs.solarMw, enabled: true, data: getData('Solar Array 1') },
+      { name: 'Backup Reactor', kind: 'reactor', value: inputs.reactorMw, enabled: isEnabled('Backup Reactor', inputs.reactorMw > 0), data: getData('Backup Reactor') },
+      { name: 'Docking Connector', kind: 'connector', value: inputs.connectorStatus === 'Connected' ? 1 : 0, enabled: true, data: getData('Docking Connector') },
+      { name: 'Bridge Light', kind: 'light', value: isEnabled('Bridge Light') ? 1 : 0, enabled: isEnabled('Bridge Light'), data: getData('Bridge Light') },
+    ];
+  }
+
+  private queryVirtualBlocks(
+    blockType: string,
+    matchMode: string,
+    filter: string,
+    inputs: SimShipInputs
+  ): SimVirtualBlock[] {
+    const flt = filter.trim().toLowerCase();
+    return this.getVirtualGridBlocks(inputs).filter((b) => {
+      const kindMatch = blockType === 'functional' ? true : b.kind === blockType;
+      if (!kindMatch) return false;
+      if (matchMode === 'tag' && flt && !b.name.toLowerCase().includes(flt)) return false;
+      if (matchMode === 'group' && flt && !b.name.toLowerCase().includes(flt)) return false;
+      return true;
+    });
+  }
+
+  private evalNumericOperand(raw: unknown, inputs: SimShipInputs): number {
+    const s = String(raw ?? '0').trim();
+    const m = /^\{([a-zA-Z0-9_]+)\}$/.exec(s);
+    if (m) {
+      const key = m[1];
+      switch (key) {
+        case 'battery':
+          return inputs.batteryPct;
+        case 'h2':
+          return inputs.h2Pct;
+        case 'o2':
+          return inputs.o2Pct;
+        case 'cargo':
+          return inputs.cargoPct;
+        case 'speed':
+          return inputs.shipSpeed;
+        case 'gravity':
+          return inputs.gravityG;
+        case 'solar':
+          return inputs.solarMw;
+        case 'reactor':
+          return inputs.reactorMw;
+        case '_value':
+          return this.loopValue;
+        case '_index':
+          return this.loopIndex;
+        case '_count':
+          return this.loopCount;
+        case '_enabled':
+          return this.loopEnabled ? 1 : 0;
+        default:
+          return this.numVars[key] ?? (Number(this.strVars[key]) || 0);
+      }
+    }
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
   }
 
   private getOrCreateLcd(name: string): SimLcdScreen {
@@ -169,6 +294,8 @@ export class ShipSimulatorSession {
         const vn = target.trim() || 'val';
         return this.numVars[vn] ?? 0;
       }
+      case 'loop_value':
+        return this.loopValue;
       default:
         return 0;
     }
@@ -188,6 +315,12 @@ export class ShipSimulatorSession {
     out = out.replaceAll('{gravity}', inputs.gravityG.toFixed(2));
     out = out.replaceAll('{solar}', inputs.solarMw.toFixed(2));
     out = out.replaceAll('{reactor}', inputs.reactorMw.toFixed(2));
+    out = out.replaceAll('{_name}', this.loopName);
+    out = out.replaceAll('{_value}', this.loopValue.toFixed(1).replace(/\.0$/, ''));
+    out = out.replaceAll('{_index}', String(this.loopIndex));
+    out = out.replaceAll('{_count}', String(this.loopCount));
+    out = out.replaceAll('{_enabled}', this.loopEnabled ? '1' : '0');
+    out = out.replaceAll('{_data}', this.loopData);
 
     for (const [k, v] of Object.entries(this.strVars)) {
       out = out.replaceAll(`{${k}}`, v);
@@ -214,13 +347,18 @@ export class ShipSimulatorSession {
       .reduce((acc, item) => acc + item.amount, 0);
   }
 
-  private evalCondition(block: ScriptBlock, inputs: SimShipInputs, argument: string): boolean {
-    const source = String(block.params.source ?? 'battery_pct') as ConditionSource;
-    const rawVal = String(block.params.value ?? '0');
-    const op = String(block.params.operator ?? '<');
-    const boolExpect = String(block.params.boolExpect ?? 'true') === 'true';
-    const target = String(block.params.target ?? '').trim();
-
+  private evalSingleCondition(
+    source: ConditionSource,
+    rawVal: string,
+    op: string,
+    boolExpect: boolean,
+    target: string,
+    varName: string,
+    itemCategory: string,
+    itemSubtype: string,
+    inputs: SimShipInputs,
+    argument: string
+  ): boolean {
     if (source === 'argument_equals') {
       return argument.trim().toLowerCase() === rawVal.trim().toLowerCase();
     }
@@ -246,13 +384,18 @@ export class ShipSimulatorSession {
         case 'block_enabled':
           actual = Boolean(this.enabledBlocks[target.toLowerCase()]);
           break;
+        case 'loop_enabled':
+          actual = this.loopEnabled;
+          break;
       }
       return boolExpect ? actual : !actual;
     }
 
     if (source === 'variable') {
-      const vn = String(block.params.varName ?? 'state').trim() || 'state';
-      if (Number.isNaN(Number(rawVal)) && (op === '==' || op === '!=')) {
+      const vn = varName.trim() || 'state';
+      const trimmedVal = rawVal.trim();
+      const isVarToken = /^\{[a-zA-Z0-9_]+\}$/.test(trimmedVal);
+      if (!isVarToken && Number.isNaN(Number(trimmedVal)) && (op === '==' || op === '!=')) {
         const eq = (this.strVars[vn] ?? '').toLowerCase() === rawVal.toLowerCase();
         return op === '==' ? eq : !eq;
       }
@@ -291,20 +434,25 @@ export class ShipSimulatorSession {
         lhs = inputs.projectorRemaining;
         break;
       case 'item_count':
-        lhs = this.getItemCount(
-          inputs,
-          String(block.params.itemCategory ?? 'MyObjectBuilder_Ingot'),
-          String(block.params.itemSubtype ?? 'Uranium')
-        );
+        lhs = this.getItemCount(inputs, itemCategory, itemSubtype);
+        break;
+      case 'loop_value':
+        lhs = this.loopValue;
+        break;
+      case 'loop_index':
+        lhs = this.loopIndex;
+        break;
+      case 'loop_count':
+        lhs = this.loopCount;
         break;
       case 'variable': {
-        const vn = String(block.params.varName ?? 'state').trim() || 'state';
+        const vn = varName.trim() || 'state';
         lhs = this.numVars[vn] ?? 0;
         break;
       }
     }
 
-    const rhs = Number(rawVal) || 0;
+    const rhs = this.evalNumericOperand(rawVal, inputs);
     switch (op) {
       case '<':
         return lhs < rhs;
@@ -321,6 +469,39 @@ export class ShipSimulatorSession {
       default:
         return false;
     }
+  }
+
+  private evalCondition(block: ScriptBlock, inputs: SimShipInputs, argument: string): boolean {
+    const first = this.evalSingleCondition(
+      String(block.params.source ?? 'battery_pct') as ConditionSource,
+      String(block.params.value ?? '0'),
+      String(block.params.operator ?? '<'),
+      String(block.params.boolExpect ?? 'true') === 'true',
+      String(block.params.target ?? '').trim(),
+      String(block.params.varName ?? 'state'),
+      String(block.params.itemCategory ?? 'MyObjectBuilder_Ingot'),
+      String(block.params.itemSubtype ?? 'Uranium'),
+      inputs,
+      argument
+    );
+
+    const join = String(block.params.logicJoin ?? 'none');
+    if (join === 'AND' || join === 'OR') {
+      const second = this.evalSingleCondition(
+        String(block.params.source2 ?? 'connector_connected') as ConditionSource,
+        String(block.params.value2 ?? '0'),
+        String(block.params.operator2 ?? '<'),
+        String(block.params.boolExpect2 ?? 'false') === 'true',
+        String(block.params.target2 ?? '').trim(),
+        String(block.params.varName2 ?? 'state'),
+        'MyObjectBuilder_Ingot',
+        'Uranium',
+        inputs,
+        argument
+      );
+      return join === 'AND' ? first && second : first || second;
+    }
+    return first;
   }
 
   private execList(
@@ -521,6 +702,50 @@ export class ShipSimulatorSession {
         }
 
         // ======================== CONTROL & LOGIC ========================
+        case 'define_function':
+          break;
+
+        case 'call_function': {
+          const fnKey = String(block.params.name ?? '').trim().toLowerCase();
+          const fnBody = this.functionsMap.get(fnKey);
+          if (fnBody && this.callDepth < 16) {
+            this.callDepth++;
+            this.execList(fnBody, inputs, argument, deltaSeconds, echoLog);
+            this.callDepth--;
+          }
+          break;
+        }
+
+        case 'for_each_block': {
+          const bType = String(block.params.blockType ?? 'functional');
+          const mMode = String(block.params.matchMode ?? 'tag');
+          const flt = String(block.params.filter ?? '').trim();
+          const matched = this.queryVirtualBlocks(bType, mMode, flt, inputs);
+          this.loopCount = matched.length;
+          for (let i = 0; i < matched.length; i++) {
+            const vb = matched[i];
+            this.loopIndex = i;
+            this.loopName = vb.name;
+            this.loopValue = vb.value;
+            this.loopEnabled = vb.enabled;
+            this.loopData = vb.data;
+            this.loopKind = vb.kind;
+            this.execList(block.children ?? [], inputs, argument, deltaSeconds, echoLog);
+          }
+          break;
+        }
+
+        case 'repeat_times': {
+          const count = Math.max(0, Math.min(200, Math.round(this.evalNumericOperand(block.params.count, inputs))));
+          const iv = String(block.params.indexVar ?? 'i').trim() || 'i';
+          for (let i = 0; i < count; i++) {
+            this.numVars[iv] = i;
+            this.strVars[iv] = String(i);
+            this.execList(block.children ?? [], inputs, argument, deltaSeconds, echoLog);
+          }
+          break;
+        }
+
         case 'on_argument': {
           const expected = String(block.params.argument ?? '').trim();
           if (expected && argument.trim().toLowerCase() === expected.toLowerCase()) {
@@ -556,11 +781,13 @@ export class ShipSimulatorSession {
           const src = String(block.params.source ?? 'battery_pct');
           if (src === 'text') {
             this.strVars[vn] = this.formatTemplate(String(block.params.value ?? ''), inputs);
+          } else if (src === 'loop_name') {
+            this.strVars[vn] = this.loopName;
           } else {
             let v = 0;
             switch (src) {
               case 'number':
-                v = Number(block.params.value) || 0;
+                v = this.evalNumericOperand(block.params.value, inputs);
                 break;
               case 'battery_pct':
                 v = inputs.batteryPct;
@@ -596,10 +823,44 @@ export class ShipSimulatorSession {
                   String(block.params.itemSubtype ?? 'Ice')
                 );
                 break;
+              case 'loop_value':
+                v = this.loopValue;
+                break;
+              case 'loop_index':
+                v = this.loopIndex;
+                break;
+              case 'loop_count':
+                v = this.loopCount;
+                break;
+              case 'loop_enabled':
+                v = this.loopEnabled ? 1 : 0;
+                break;
             }
             this.numVars[vn] = v;
             this.strVars[vn] = Number.isInteger(v) ? String(v) : v.toFixed(1);
           }
+          break;
+        }
+
+        case 'math_op': {
+          const dest = String(block.params.destVar ?? 'result').trim() || 'result';
+          const a = this.evalNumericOperand(block.params.left, inputs);
+          const b = this.evalNumericOperand(block.params.right, inputs);
+          const op = String(block.params.op ?? '+');
+          let r = 0;
+          switch (op) {
+            case '+': r = a + b; break;
+            case '-': r = a - b; break;
+            case '*': r = a * b; break;
+            case '/': r = b !== 0 ? a / b : 0; break;
+            case '%': r = b !== 0 ? a % b : 0; break;
+            case 'min': r = Math.min(a, b); break;
+            case 'max': r = Math.max(a, b); break;
+            case 'round': r = Math.round(a); break;
+            default: r = a + b;
+          }
+          this.numVars[dest] = r;
+          this.strVars[dest] = Number.isInteger(r) ? String(r) : r.toFixed(2);
           break;
         }
 
@@ -609,6 +870,140 @@ export class ShipSimulatorSession {
           const next = (this.numVars[vn] ?? 0) + delta;
           this.numVars[vn] = next;
           this.strVars[vn] = Number.isInteger(next) ? String(next) : next.toFixed(1);
+          break;
+        }
+
+        case 'read_block_prop': {
+          const vn = String(block.params.varName ?? 'val').trim() || 'val';
+          const mode = String(block.params.targetMode ?? 'named');
+          const bName = String(block.params.blockName ?? '').trim();
+          const prop = String(block.params.property ?? 'enabled');
+          if (mode === 'tag_count') {
+            const count = this.queryVirtualBlocks('functional', 'tag', bName, inputs).length;
+            this.numVars[vn] = count;
+            this.strVars[vn] = String(count);
+          } else {
+            const vb =
+              mode === 'loop'
+                ? { name: this.loopName, kind: this.loopKind, value: this.loopValue, enabled: this.loopEnabled, data: this.loopData }
+                : this.getVirtualGridBlocks(inputs).find((x) => x.name.toLowerCase() === bName.toLowerCase()) ?? null;
+            if (prop === 'custom_data') {
+              this.strVars[vn] = vb ? vb.data : '';
+            } else {
+              let v = 0;
+              if (vb) {
+                if (prop === 'enabled' || prop === 'working') v = vb.enabled ? 1 : 0;
+                else v = vb.value;
+              }
+              this.numVars[vn] = v;
+              this.strVars[vn] = Number.isInteger(v) ? String(v) : v.toFixed(1);
+            }
+          }
+          break;
+        }
+
+        case 'custom_data_io': {
+          const mode = String(block.params.mode ?? 'read_ini');
+          const target = String(block.params.target ?? 'self');
+          const bName = String(block.params.blockName ?? '').trim();
+          const iniKey = String(block.params.iniKey ?? 'minBatt').trim().toLowerCase();
+          const vn = String(block.params.varName ?? 'minBatt').trim() || 'minBatt';
+          const fb = String(block.params.fallbackOrText ?? '25');
+          const key = target === 'self' ? '__pb_me__' : target === 'loop' ? this.loopName.toLowerCase() : bName.toLowerCase();
+          const rawData =
+            target === 'self'
+              ? this.blockCustomData.__pb_me__ ?? inputs.pbCustomData ?? 'minBatt=25\nminO2=65\n'
+              : target === 'loop'
+              ? this.loopData
+              : this.blockCustomData[key] ?? '';
+
+          if (mode === 'write') {
+            const formatted = this.formatTemplate(fb, inputs);
+            this.blockCustomData[key] = formatted;
+            if (target === 'loop') this.loopData = formatted;
+          } else if (mode === 'read_all') {
+            this.strVars[vn] = rawData;
+          } else {
+            let found = fb;
+            for (const line of rawData.split('\n')) {
+              const t = line.trim();
+              if (!t || t.startsWith('#') || t.startsWith(';')) continue;
+              const eq = t.indexOf('=');
+              if (eq > 0 && t.slice(0, eq).trim().toLowerCase() === iniKey) {
+                found = t.slice(eq + 1).trim();
+                break;
+              }
+            }
+            const parsed = Number(found);
+            if (found !== '' && Number.isFinite(parsed)) {
+              this.numVars[vn] = parsed;
+              this.strVars[vn] = Number.isInteger(parsed) ? String(parsed) : parsed.toFixed(1);
+            } else {
+              this.strVars[vn] = found;
+            }
+          }
+          break;
+        }
+
+        case 'loop_block_action': {
+          const nm = this.loopName || 'Loop Block';
+          const act = String(block.params.action ?? 'off');
+          if (act === 'on' || act === 'off' || act === 'toggle') {
+            const nextOn = act === 'on' ? true : act === 'off' ? false : !this.loopEnabled;
+            this.enabledBlocks[nm.toLowerCase()] = nextOn;
+            this.loopEnabled = nextOn;
+            this.blocks[`loop:${nm}`] = {
+              name: nm,
+              kind: 'Loop Block',
+              state: nextOn ? 'ON' : 'OFF',
+              accent: nextOn ? 'ok' : 'neutral',
+            };
+          } else if (act === 'door_open' || act === 'door_close') {
+            this.blocks[`door:${nm}`] = {
+              name: nm,
+              kind: 'Door',
+              state: act === 'door_open' ? 'OPEN' : 'CLOSED',
+              accent: act === 'door_open' ? 'warn' : 'ok',
+            };
+          } else if (act === 'battery_auto' || act === 'battery_recharge') {
+            this.blocks[`bat:${nm}`] = {
+              name: nm,
+              kind: 'Battery',
+              state: act === 'battery_recharge' ? 'RECHARGE' : 'AUTO',
+              accent: act === 'battery_recharge' ? 'warn' : 'ok',
+            };
+          } else if (act === 'light_color') {
+            const c = String(block.params.color ?? '#FF3B30').toUpperCase();
+            this.blocks[`light:${nm}`] = { name: nm, kind: 'Light', state: `ON ${c}`, accent: 'warn', color: c };
+          } else if (act === 'custom_data') {
+            const txt = this.formatTemplate(String(block.params.value ?? ''), inputs);
+            this.blockCustomData[nm.toLowerCase()] = txt;
+            this.loopData = txt;
+          } else {
+            const idStr = String(block.params.actionOrProp ?? 'Action');
+            const vNum = this.evalNumericOperand(block.params.value, inputs);
+            this.blocks[`term:${nm}`] = {
+              name: nm,
+              kind: 'Terminal',
+              state: act === 'terminal_float' ? `${idStr} = ${vNum}` : `ACTION: ${idStr}`,
+              accent: 'ok',
+            };
+          }
+          break;
+        }
+
+        case 'terminal_action': {
+          const tMode = String(block.params.targetMode ?? 'block');
+          const nm = tMode === 'loop' ? this.loopName || 'Loop Block' : String(block.params.name ?? 'Block').trim() || 'Block';
+          const opKind = String(block.params.opKind ?? 'action');
+          const propId = String(block.params.propId ?? 'Action').trim() || 'Action';
+          const vNum = this.evalNumericOperand(block.params.value, inputs);
+          this.blocks[`term:${nm}`] = {
+            name: nm,
+            kind: 'Terminal',
+            state: opKind === 'action' ? `ACTION: ${propId}` : `${propId} = ${opKind === 'bool' ? (String(block.params.value).toLowerCase() === 'true' || String(block.params.value) === '1' ? 'TRUE' : 'FALSE') : vNum}`,
+            accent: 'ok',
+          };
           break;
         }
 

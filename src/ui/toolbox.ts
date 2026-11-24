@@ -15,6 +15,7 @@ export class ToolboxView {
   private searchQuery = '';
   private listEl!: HTMLElement;
   private catBarEl!: HTMLElement;
+  private detailEl!: HTMLElement;
 
   constructor(opts: ToolboxOptions) {
     this.container = opts.container;
@@ -26,7 +27,7 @@ export class ToolboxView {
     this.container.innerHTML = `
       <div class="toolbox-header">
         <div class="pane-title-row">
-          <h2 class="pane-title">Logic Blocks</h2>
+          <span class="pane-title">BLOCKS</span>
           <span class="pane-hint">Click or drag</span>
         </div>
         <div class="search-box">
@@ -35,17 +36,22 @@ export class ToolboxView {
             id="toolbox-search"
             type="search"
             class="search-input"
-            placeholder="Search LCD, airlock, battery, door..."
+            placeholder="Filter blocks (loop, math, gui...)"
             autocomplete="off"
           />
         </div>
         <div class="cat-pills" id="toolbox-categories" role="tablist" aria-label="Block categories"></div>
       </div>
       <div class="toolbox-list" id="toolbox-list"></div>
+      <div class="toolbox-detail" id="toolbox-detail">
+        <div class="tb-detail-title">Hover a block for SE API details</div>
+        <div class="tb-detail-api">Click any block to insert, or drag directly into a slot</div>
+      </div>
     `;
 
     this.catBarEl = this.container.querySelector('#toolbox-categories') as HTMLElement;
     this.listEl = this.container.querySelector('#toolbox-list') as HTMLElement;
+    this.detailEl = this.container.querySelector('#toolbox-detail') as HTMLElement;
 
     const searchInput = this.container.querySelector('#toolbox-search') as HTMLInputElement;
     searchInput.addEventListener('input', () => {
@@ -109,7 +115,6 @@ export class ToolboxView {
       return;
     }
 
-    // Group by category when showing 'all' and no search query
     const showGroupHeaders = this.activeCategory === 'all' && !this.searchQuery;
     const frag = document.createDocumentFragment();
     let lastCat: BlockCategory | null = null;
@@ -132,18 +137,19 @@ export class ToolboxView {
       item.title = `${def.shortDesc}\nSE API: ${def.seApiSummary}`;
 
       item.innerHTML = `
-        <div class="palette-block-notch"></div>
-        <div class="palette-block-body">
-          <div class="palette-block-top">
-            <span class="palette-block-title">${this.escapeHtml(def.label)}</span>
-            ${def.isContainer ? '<span class="palette-c-badge">C-Block</span>' : ''}
-            <button type="button" class="palette-add-btn" aria-label="Add ${this.escapeHtml(def.label)}" title="Add to workspace">
-              ${ICONS.plus}
-            </button>
-          </div>
-          <div class="palette-block-desc">${this.escapeHtml(def.shortDesc)}</div>
-        </div>
+        <span class="palette-block-title">${this.escapeHtml(def.label)}</span>
+        ${def.isContainer ? '<span class="palette-c-badge">BLK</span>' : ''}
+        <button type="button" class="palette-add-btn" aria-label="Add ${this.escapeHtml(def.label)}" title="Insert block">
+          ${ICONS.plus}
+        </button>
       `;
+
+      item.addEventListener('mouseenter', () => {
+        this.detailEl.innerHTML = `
+          <div class="tb-detail-title">${this.escapeHtml(def.shortDesc)}</div>
+          <div class="tb-detail-api">${this.escapeHtml(def.seApiSummary)}</div>
+        `;
+      });
 
       item.addEventListener('dragstart', (ev) => {
         setActiveDrag({ kind: 'palette', blockType: def.type });
@@ -171,7 +177,11 @@ export class ToolboxView {
     this.listEl.appendChild(frag);
   }
 
-  private escapeHtml(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  private escapeHtml(str: string): string {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 }

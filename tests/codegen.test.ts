@@ -6,8 +6,8 @@ import { PRESET_SCRIPTS } from '../src/presets/presets';
 import type { ScriptProject } from '../src/types';
 
 describe('Space Engineers C# Code Generator (with Vector GUI HUD)', () => {
-  it('generates clean, error-free C# 6.0 code for all 8 preset scripts', () => {
-    expect(PRESET_SCRIPTS).toHaveLength(8);
+  it('generates clean, error-free C# 6.0 code for all 11 preset scripts', () => {
+    expect(PRESET_SCRIPTS).toHaveLength(11);
     for (const preset of PRESET_SCRIPTS) {
       const res = generateSpaceEngineersScript(preset.project);
       const errors = res.issues.filter((i) => i.severity === 'error');

@@ -294,28 +294,38 @@ export class ProjectStore {
         screen.children = [block];
         this.project.blocks.push(screen);
       }
+    } else if (type === 'define_function' || type === 'on_setup') {
+      this.project.blocks.unshift(block);
     } else if (this.selectedBlockId) {
       const selected = findBlockById(this.project.blocks, this.selectedBlockId);
-      if (selected && selected.children && type !== 'on_setup' && type !== 'gui_screen') {
+      if (selected && selected.children && type !== 'gui_screen') {
         selected.children.push(block);
       } else {
         const loc = findParentList(this.project.blocks, this.selectedBlockId);
-        if (loc && type !== 'on_setup') {
+        if (loc) {
           loc.list.splice(loc.index + 1, 0, block);
         } else {
           this.project.blocks.push(block);
         }
       }
     } else {
-      if (type === 'on_setup') {
-        this.project.blocks.unshift(block);
-      } else {
-        this.project.blocks.push(block);
-      }
+      this.project.blocks.push(block);
     }
     this.selectedBlockId = block.id;
     this.emit();
     return block;
+  }
+
+  setAllCollapsed(collapsed: boolean): void {
+    const walk = (list: ScriptBlock[]) => {
+      for (const b of list) {
+        if (BLOCK_MAP[b.type]?.isContainer) b.collapsed = collapsed;
+        if (b.children?.length) walk(b.children);
+        if (b.elseChildren?.length) walk(b.elseChildren);
+      }
+    };
+    walk(this.project.blocks);
+    this.emit();
   }
 
   moveBlock(blockId: string, target: DropTarget): boolean {
@@ -328,8 +338,8 @@ export class ProjectStore {
       return false;
     }
 
-    // Prevent nesting on_setup inside another block
-    if (moving.type === 'on_setup' && target.parentId !== null) {
+    // Prevent nesting on_setup or define_function inside another block
+    if ((moving.type === 'on_setup' || moving.type === 'define_function') && target.parentId !== null) {
       return false;
     }
 

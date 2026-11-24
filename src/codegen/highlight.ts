@@ -32,12 +32,17 @@ const KEYWORDS = new Set([
   'delegate',
   'ref',
   'using',
+  'is',
 ]);
 
 const SE_TYPES = new Set([
   'Program',
   'UpdateType',
   'UpdateFrequency',
+  'ITerminalAction',
+  'IMyPowerProducer',
+  'IMyAssembler',
+  'IMyRefinery',
   'IMyTextPanel',
   'IMyTextSurface',
   'IMyTextSurfaceProvider',

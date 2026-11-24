@@ -24,10 +24,27 @@ export class GridLogicApp {
   private toastEl!: HTMLElement;
   private toastTimer: number | null = null;
 
+  private leftWidth = 222;
+  private rightWidth = 392;
+  private leftCollapsed = false;
+  private rightCollapsed = false;
+  private studioGridEl!: HTMLElement;
+
   constructor(root: HTMLElement) {
     this.root = root;
     this.store = new ProjectStore();
     this.mount();
+  }
+
+  private applyGridColumns(): void {
+    if (!this.studioGridEl) return;
+    const lw = this.leftCollapsed ? '0px' : `${this.leftWidth}px`;
+    const rw = this.rightCollapsed ? '0px' : `${this.rightWidth}px`;
+    const lh = this.leftCollapsed ? '0px' : '4px';
+    const rh = this.rightCollapsed ? '0px' : '4px';
+    this.studioGridEl.style.gridTemplateColumns = `${lw} ${lh} minmax(360px, 1fr) ${rh} ${rw}`;
+    this.studioGridEl.classList.toggle('left-collapsed', this.leftCollapsed);
+    this.studioGridEl.classList.toggle('right-collapsed', this.rightCollapsed);
   }
 
   private mount(): void {
@@ -36,10 +53,8 @@ export class GridLogicApp {
         <header class="topbar">
           <div class="topbar-brand">
             <span class="brand-icon">${ICONS.logo}</span>
-            <div class="brand-text">
-              <h1 class="brand-name">GRIDLOGIC</h1>
-              <span class="brand-sub">Space Engineers Visual Script Studio</span>
-            </div>
+            <h1 class="brand-name">GRIDLOGIC</h1>
+            <span class="brand-ver">SE·IDE</span>
           </div>
 
           <div class="topbar-project">
@@ -52,7 +67,7 @@ export class GridLogicApp {
             />
             <button type="button" id="open-presets-btn" class="btn btn-sm btn-secondary">
               ${ICONS.presets}
-              <span>Presets (${PRESET_SCRIPTS.length})</span>
+              <span>Examples (${PRESET_SCRIPTS.length})</span>
             </button>
             <button type="button" id="new-blank-btn" class="btn btn-sm btn-ghost" title="Start from an empty script">
               ${ICONS.fileNew}
@@ -61,6 +76,10 @@ export class GridLogicApp {
           </div>
 
           <div class="topbar-actions">
+            <div class="btn-group">
+              <button type="button" id="toggle-left-pane" class="btn btn-sm btn-ghost active-pane-btn" title="Toggle Blocks Toolbox">Blocks</button>
+              <button type="button" id="toggle-right-pane" class="btn btn-sm btn-ghost active-pane-btn" title="Toggle Inspector / Simulator">Preview</button>
+            </div>
             <div class="btn-group">
               <button type="button" id="undo-btn" class="btn btn-sm btn-ghost" title="Undo (Ctrl+Z)" aria-label="Undo">
                 ${ICONS.undo}
@@ -71,39 +90,81 @@ export class GridLogicApp {
             </div>
             <button type="button" id="json-blueprint-btn" class="btn btn-sm btn-ghost" title="Save or load block blueprint JSON">
               ${ICONS.upload}
-              <span class="hide-narrow">Save/Load</span>
+              <span class="hide-narrow">JSON</span>
             </button>
             <button type="button" id="guide-shortcut-btn" class="btn btn-sm btn-ghost" title="View in-game Space Engineers setup checklist">
               ${ICONS.help}
-              <span class="hide-narrow">SE Setup</span>
+              <span class="hide-narrow">Setup</span>
             </button>
             <button type="button" id="copy-se-script-btn" class="btn btn-sm btn-primary">
               ${ICONS.copy}
-              <span>Copy C# for SE</span>
+              <span>Copy C#</span>
             </button>
           </div>
         </header>
 
-        <main class="studio-grid">
+        <main class="studio-grid" id="studio-grid">
           <aside class="pane pane-toolbox" id="pane-toolbox" aria-label="Block toolbox"></aside>
+          <div class="pane-resizer" id="resize-left" title="Drag to resize toolbox"></div>
           <section class="pane pane-workspace" id="pane-workspace" aria-label="Visual script workspace"></section>
+          <div class="pane-resizer" id="resize-right" title="Drag to resize inspector"></div>
           <section class="pane pane-inspector" id="pane-inspector" aria-label="Generated C# code and ship simulator"></section>
         </main>
       </div>
       <div class="toast" id="app-toast" role="status" aria-live="polite" hidden></div>
     `;
 
+    this.studioGridEl = this.root.querySelector('#studio-grid') as HTMLElement;
     this.nameInput = this.root.querySelector('#script-name-input') as HTMLInputElement;
     this.undoBtn = this.root.querySelector('#undo-btn') as HTMLButtonElement;
     this.redoBtn = this.root.querySelector('#redo-btn') as HTMLButtonElement;
     this.copyCtaBtn = this.root.querySelector('#copy-se-script-btn') as HTMLButtonElement;
     this.toastEl = this.root.querySelector('#app-toast') as HTMLElement;
+    this.applyGridColumns();
+
+    const toggleLeftBtn = this.root.querySelector('#toggle-left-pane') as HTMLButtonElement;
+    const toggleRightBtn = this.root.querySelector('#toggle-right-pane') as HTMLButtonElement;
+    toggleLeftBtn.addEventListener('click', () => {
+      this.leftCollapsed = !this.leftCollapsed;
+      toggleLeftBtn.classList.toggle('active-pane-btn', !this.leftCollapsed);
+      this.applyGridColumns();
+    });
+    toggleRightBtn.addEventListener('click', () => {
+      this.rightCollapsed = !this.rightCollapsed;
+      toggleRightBtn.classList.toggle('active-pane-btn', !this.rightCollapsed);
+      this.applyGridColumns();
+    });
+
+    const wireResizer = (handle: HTMLElement | null, side: 'left' | 'right') => {
+      if (!handle) return;
+      handle.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        const startX = ev.clientX;
+        const startW = side === 'left' ? this.leftWidth : this.rightWidth;
+        handle.classList.add('is-dragging');
+        const onMove = (m: MouseEvent) => {
+          const dx = m.clientX - startX;
+          if (side === 'left') this.leftWidth = Math.max(190, Math.min(340, startW + dx));
+          else this.rightWidth = Math.max(320, Math.min(580, startW - dx));
+          this.applyGridColumns();
+        };
+        const onUp = () => {
+          handle.classList.remove('is-dragging');
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      });
+    };
+    wireResizer(this.root.querySelector('#resize-left'), 'left');
+    wireResizer(this.root.querySelector('#resize-right'), 'right');
 
     this.presetsModal = new PresetsModal((presetId) => {
       const preset = PRESET_SCRIPTS.find((p) => p.id === presetId);
       if (this.store.loadPreset(presetId)) {
         this.inspector.resetSimulation();
-        this.showToast(`Loaded preset: ${preset?.name ?? presetId}`);
+        this.showToast(`Loaded: ${preset?.name ?? presetId}`);
       }
     });
 
@@ -224,7 +285,7 @@ export class GridLogicApp {
       this.copyCtaBtn.classList.add('is-copied');
       this.showToast('C# script copied — paste into your Space Engineers Programmable Block!');
       window.setTimeout(() => {
-        this.copyCtaBtn.innerHTML = `${ICONS.copy} <span>Copy C# for SE</span>`;
+        this.copyCtaBtn.innerHTML = `${ICONS.copy} <span>Copy C#</span>`;
         this.copyCtaBtn.classList.remove('is-copied');
       }, 1800);
     };

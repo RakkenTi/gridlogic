@@ -129,6 +129,354 @@ export const PRESET_SCRIPTS: PresetScript[] = [
     },
   },
   {
+    id: 'native-power-grid-balancer',
+    name: 'Adaptive Power & Load Shedding',
+    category: 'Native Logic',
+    difficulty: 'Advanced',
+    tier: 'native',
+    summary:
+      '100% native composable logic: reads minBatt from PB CustomData INI, computes net solar/reactor math, runs compound AND conditions, calls reusable Functions with For-Each loops to shed/restore [Aux] blocks, and drives a live HUD.',
+    setupHint:
+      'Add "[Aux]" to any non-essential blocks (assemblers, refineries, floodlights), name an LCD "Power HUD LCD", and optionally set "minBatt=25" in the Programmable Block CustomData.',
+    project: {
+      name: 'Adaptive Power & Load Shedding',
+      description: 'Native-block grid power balancer using CustomData INI config, Math ops, Functions, compound If, and For-Each load shedding.',
+      updateFrequency: 'Update10',
+      sameGridOnly: true,
+      blocks: [
+        b('np_fn_shed', 'define_function', { name: 'ShedAuxLoad' }, [
+          b('np_shed_cnt0', 'set_variable', { varName: 'shedCount', source: 'number', value: '0' }),
+          b('np_shed_loop', 'for_each_block', { blockType: 'functional', matchMode: 'tag', filter: '[Aux]' }, [
+            b('np_shed_off', 'loop_block_action', { action: 'off' }),
+            b('np_shed_inc', 'change_variable', { varName: 'shedCount', delta: 1 }),
+          ]),
+          b('np_shed_mode', 'set_variable', { varName: 'gridMode', source: 'text', value: 'LOAD SHED' }),
+        ]),
+        b('np_fn_restore', 'define_function', { name: 'RestoreAuxLoad' }, [
+          b('np_rest_cnt0', 'set_variable', { varName: 'shedCount', source: 'number', value: '0' }),
+          b('np_rest_loop', 'for_each_block', { blockType: 'functional', matchMode: 'tag', filter: '[Aux]' }, [
+            b('np_rest_on', 'loop_block_action', { action: 'on' }),
+          ]),
+          b('np_rest_mode', 'set_variable', { varName: 'gridMode', source: 'text', value: 'NOMINAL' }),
+        ]),
+        b('np_ini', 'custom_data_io', {
+          mode: 'read_ini',
+          target: 'self',
+          blockName: '',
+          iniKey: 'minBatt',
+          varName: 'minBatt',
+          fallbackOrText: '25',
+        }),
+        b('np_math_net', 'math_op', {
+          destVar: 'netMW',
+          left: '{solar}',
+          op: '-',
+          right: '{reactor}',
+        }),
+        b(
+          'np_if_low',
+          'if_condition',
+          {
+            source: 'battery_pct',
+            operator: '<',
+            value: '{minBatt}',
+            logicJoin: 'AND',
+            source2: 'connector_connected',
+            target2: 'Docking Connector',
+            boolExpect2: 'false',
+            hasElse: true,
+          },
+          [
+            b('np_call_shed', 'call_function', { name: 'ShedAuxLoad' }),
+            b('np_react_on', 'terminal_action', {
+              targetMode: 'block',
+              name: 'Backup Reactor',
+              opKind: 'action',
+              propId: 'OnOff_On',
+              value: '0',
+            }),
+          ],
+          [
+            b('np_call_rest', 'call_function', { name: 'RestoreAuxLoad' }),
+            b('np_react_off', 'terminal_action', {
+              targetMode: 'block',
+              name: 'Backup Reactor',
+              opKind: 'action',
+              propId: 'OnOff_Off',
+              value: '0',
+            }),
+          ]
+        ),
+        b(
+          'np_gui',
+          'gui_screen',
+          {
+            lcdName: 'Power HUD LCD',
+            surfaceIndex: 0,
+            bgColor: '#0A0D10',
+            frameColor: '#C98A3A',
+            showFrame: true,
+            showGrid: false,
+          },
+          [
+            b('np_hdr', 'gui_header', {
+              title: 'GRID POWER BALANCER',
+              badge: '{gridMode}',
+              accentColor: '#C98A3A',
+            }),
+            b('np_bar_bat', 'gui_bar', {
+              label: 'SHIP BATTERIES',
+              source: 'battery_pct',
+              style: 'segmented',
+              icon: 'energy',
+              colorMode: 'auto',
+              color: '#22C55E',
+            }),
+            b('np_cards', 'gui_metrics', {
+              count: '3',
+              accentColor: '#C98A3A',
+              label1: 'NET SOLAR',
+              val1: '{netMW} MW',
+              label2: 'THRESHOLD',
+              val2: '{minBatt}%',
+              label3: 'SHED UNITS',
+              val3: '{shedCount}',
+            }),
+            b(
+              'np_hud_alert',
+              'if_condition',
+              { source: 'variable', varName: 'shedCount', operator: '>', value: '0', logicJoin: 'none', hasElse: false },
+              [
+                b('np_alert_msg', 'gui_alert', {
+                  severity: 'warning',
+                  message: 'LOAD SHEDDING ACTIVE — {shedCount} [Aux] BLOCKS OFF',
+                }),
+              ]
+            ),
+          ]
+        ),
+      ],
+    },
+  },
+  {
+    id: 'native-dynamic-battery-array',
+    name: 'Dynamic Per-Battery Array Monitor',
+    category: 'Native Logic',
+    difficulty: 'Advanced',
+    tier: 'native',
+    summary:
+      '100% native loop-driven HUD: uses For Each Block inside a GUI Canvas to dynamically draw a live progress bar for EVERY battery on your grid ({_name}, {_value}), compute fleet average with Math, and manage charge mode.',
+    setupHint:
+      'Place an LCD Panel named "Battery Array LCD". Automatically discovers every battery on your ship — add or remove batteries and the HUD adapts without editing code!',
+    project: {
+      name: 'Dynamic Per-Battery Array Monitor',
+      description: 'Native For-Each loop dynamically rendering per-unit battery bars and computing live fleet average.',
+      updateFrequency: 'Update10',
+      sameGridOnly: true,
+      blocks: [
+        b('nb_init_sum', 'set_variable', { varName: 'sumPct', source: 'number', value: '0' }),
+        b('nb_init_low', 'set_variable', { varName: 'lowCells', source: 'number', value: '0' }),
+        b('nb_cnt', 'read_block_prop', {
+          varName: 'battCount',
+          targetMode: 'tag_count',
+          blockName: 'Battery',
+          property: 'enabled',
+        }),
+        b(
+          'nb_gui',
+          'gui_screen',
+          {
+            lcdName: 'Battery Array LCD',
+            surfaceIndex: 0,
+            bgColor: '#0A0E12',
+            frameColor: '#4B9E78',
+            showFrame: true,
+            showGrid: false,
+          },
+          [
+            b('nb_hdr', 'gui_header', {
+              title: 'BATTERY BANK TELEMETRY',
+              badge: '{battCount} UNITS',
+              accentColor: '#4B9E78',
+            }),
+            b('nb_loop', 'for_each_block', { blockType: 'battery', matchMode: 'all', filter: '' }, [
+              b('nb_bar', 'gui_bar', {
+                label: '{_name}',
+                source: 'loop_value',
+                style: 'compact',
+                icon: 'energy',
+                colorMode: 'auto',
+                color: '#22C55E',
+              }),
+              b('nb_sum', 'math_op', {
+                destVar: 'sumPct',
+                left: '{sumPct}',
+                op: '+',
+                right: '{_value}',
+              }),
+              b(
+                'nb_if_cell_low',
+                'if_condition',
+                { source: 'loop_value', operator: '<', value: '25', logicJoin: 'none', hasElse: false },
+                [
+                  b('nb_low_inc', 'change_variable', { varName: 'lowCells', delta: 1 }),
+                  b('nb_set_auto', 'loop_block_action', { action: 'battery_auto' }),
+                ]
+              ),
+            ]),
+            b('nb_avg_div', 'math_op', { destVar: 'avgRaw', left: '{sumPct}', op: '/', right: '{_count}' }),
+            b('nb_avg_rnd', 'math_op', { destVar: 'avgPct', left: '{avgRaw}', op: 'round', right: '0' }),
+            b('nb_cards', 'gui_metrics', {
+              count: '3',
+              accentColor: '#4B9E78',
+              label1: 'FLEET AVG',
+              val1: '{avgPct}%',
+              label2: 'LOW CELLS',
+              val2: '{lowCells}',
+              label3: 'SOLAR IN',
+              val3: '{solar} MW',
+            }),
+            b(
+              'nb_alert_if',
+              'if_condition',
+              { source: 'variable', varName: 'lowCells', operator: '>', value: '0', logicJoin: 'none', hasElse: false },
+              [
+                b('nb_alert', 'gui_alert', {
+                  severity: 'critical',
+                  message: '{lowCells} BATTERY UNIT(S) BELOW 25% CHARGE',
+                }),
+              ]
+            ),
+          ]
+        ),
+      ],
+    },
+  },
+  {
+    id: 'native-smart-door-sentinel',
+    name: 'Auto-Door Closer & O2 Breach Sentinel',
+    category: 'Native Logic',
+    difficulty: 'Advanced',
+    tier: 'native',
+    summary:
+      '100% native multi-routine safety script: Function #1 iterates all "[Auto]" doors to close any left open; Function #2 scans every Air Vent with Math.Min to find the lowest-pressure room and triggers breach alerts.',
+    setupHint:
+      'Add "[Auto]" to any doors you want auto-closed, name an LCD "Safety LCD", and optionally put "minO2=65" in the Programmable Block CustomData.',
+    project: {
+      name: 'Auto-Door Closer & O2 Breach Sentinel',
+      description: 'Native Functions + For-Each loops scanning [Auto] doors and all ship Air Vents for decompression.',
+      updateFrequency: 'Update10',
+      sameGridOnly: true,
+      blocks: [
+        b('nd_fn_doors', 'define_function', { name: 'ScanAutoDoors' }, [
+          b('nd_dc0', 'set_variable', { varName: 'closedDoors', source: 'number', value: '0' }),
+          b('nd_dloop', 'for_each_block', { blockType: 'door', matchMode: 'tag', filter: '[Auto]' }, [
+            b(
+              'nd_if_open',
+              'if_condition',
+              { source: 'loop_value', operator: '>', value: '5', logicJoin: 'none', hasElse: false },
+              [
+                b('nd_close', 'loop_block_action', { action: 'door_close' }),
+                b('nd_dinc', 'change_variable', { varName: 'closedDoors', delta: 1 }),
+                b('nd_echo', 'pb_echo', { text: 'Auto-closed {_name}' }),
+              ]
+            ),
+          ]),
+        ]),
+        b('nd_fn_vents', 'define_function', { name: 'ScanRoomVents' }, [
+          b('nd_min0', 'set_variable', { varName: 'minRoomO2', source: 'number', value: '100' }),
+          b('nd_vloop', 'for_each_block', { blockType: 'airvent', matchMode: 'all', filter: '' }, [
+            b('nd_vmin', 'math_op', { destVar: 'minRoomO2', left: '{minRoomO2}', op: 'min', right: '{_value}' }),
+          ]),
+        ]),
+        b('nd_ini', 'custom_data_io', {
+          mode: 'read_ini',
+          target: 'self',
+          blockName: '',
+          iniKey: 'minO2',
+          varName: 'minO2',
+          fallbackOrText: '65',
+        }),
+        b('nd_call_d', 'call_function', { name: 'ScanAutoDoors' }),
+        b('nd_call_v', 'call_function', { name: 'ScanRoomVents' }),
+        b(
+          'nd_if_breach',
+          'if_condition',
+          { source: 'variable', varName: 'minRoomO2', operator: '<', value: '{minO2}', logicJoin: 'none', hasElse: true },
+          [
+            b('nd_st_b', 'set_variable', { varName: 'hullStatus', source: 'text', value: 'BREACH' }),
+            b('nd_lt_blink', 'terminal_action', {
+              targetMode: 'block',
+              name: 'Bridge Light',
+              opKind: 'float',
+              propId: 'Blink Interval Seconds',
+              value: '0.5',
+            }),
+          ],
+          [
+            b('nd_st_ok', 'set_variable', { varName: 'hullStatus', source: 'text', value: 'SEALED' }),
+            b('nd_lt_calm', 'terminal_action', {
+              targetMode: 'block',
+              name: 'Bridge Light',
+              opKind: 'float',
+              propId: 'Blink Interval Seconds',
+              value: '0',
+            }),
+          ]
+        ),
+        b(
+          'nd_gui',
+          'gui_screen',
+          {
+            lcdName: 'Safety LCD',
+            surfaceIndex: 0,
+            bgColor: '#0A0D10',
+            frameColor: '#5A8AB5',
+            showFrame: true,
+            showGrid: false,
+          },
+          [
+            b('nd_hdr', 'gui_header', {
+              title: 'BULKHEAD & O2 SENTINEL',
+              badge: '{hullStatus}',
+              accentColor: '#5A8AB5',
+            }),
+            b('nd_bar_o2', 'gui_bar', {
+              label: 'LOWEST ROOM OXYGEN',
+              source: 'variable',
+              target: 'minRoomO2',
+              style: 'segmented',
+              icon: 'oxygen',
+              colorMode: 'auto',
+              color: '#22C55E',
+            }),
+            b('nd_cards', 'gui_metrics', {
+              count: '3',
+              accentColor: '#5A8AB5',
+              label1: 'HULL',
+              val1: '{hullStatus}',
+              label2: 'O2 LIMIT',
+              val2: '{minO2}%',
+              label3: 'DOORS SHUT',
+              val3: '{closedDoors}',
+            }),
+            b(
+              'nd_hud_breach',
+              'if_condition',
+              { source: 'variable', varName: 'minRoomO2', operator: '<', value: '{minO2}', logicJoin: 'none', hasElse: false },
+              [
+                b('nd_alert', 'gui_alert', {
+                  severity: 'critical',
+                  message: 'DECOMPRESSION DETECTED — MIN ROOM O2 {minRoomO2}%',
+                }),
+              ]
+            ),
+          ]
+        ),
+      ],
+    },
+  },
+  {
     id: 'ship-inventory-lcd',
     name: 'Ship Inventory LCD Display',
     category: 'Inventory & Cargo',
