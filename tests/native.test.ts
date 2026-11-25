@@ -14,7 +14,6 @@ describe('Native Composable Primitives & Advanced Native Examples', () => {
     for (const id of nativeIds) {
       const preset = PRESET_SCRIPTS.find((p) => p.id === id);
       expect(preset, `Preset ${id} should exist`).toBeDefined();
-      expect(preset!.tier).toBe('native');
       const res = generateSpaceEngineersScript(preset!.project);
       const errors = res.issues.filter((i) => i.severity === 'error');
       const warnings = res.issues.filter((i) => i.severity === 'warning');

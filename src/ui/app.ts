@@ -51,51 +51,54 @@ export class GridLogicApp {
     this.root.innerHTML = `
       <div class="app-shell">
         <header class="topbar">
-          <div class="topbar-brand">
-            <span class="brand-icon">${ICONS.logo}</span>
-            <h1 class="brand-name">GRIDLOGIC</h1>
-            <span class="brand-ver">SE·IDE</span>
-          </div>
-
-          <div class="topbar-project">
+          <div class="topbar-left">
+            <div class="topbar-brand">
+              <span class="brand-icon">${ICONS.logo}</span>
+              <h1 class="brand-name">GridLogic</h1>
+            </div>
+            <span class="topbar-slash" aria-hidden="true">/</span>
             <input
               id="script-name-input"
               type="text"
               class="script-name-input"
               aria-label="Script name"
-              placeholder="Script name..."
+              placeholder="Untitled Script"
             />
-            <button type="button" id="open-presets-btn" class="btn btn-sm btn-secondary">
-              ${ICONS.presets}
-              <span>Examples (${PRESET_SCRIPTS.length})</span>
-            </button>
-            <button type="button" id="new-blank-btn" class="btn btn-sm btn-ghost" title="Start from an empty script">
-              ${ICONS.fileNew}
-              <span>Blank</span>
-            </button>
           </div>
 
           <div class="topbar-actions">
-            <div class="btn-group">
-              <button type="button" id="toggle-left-pane" class="btn btn-sm btn-ghost active-pane-btn" title="Toggle Blocks Toolbox">Blocks</button>
-              <button type="button" id="toggle-right-pane" class="btn btn-sm btn-ghost active-pane-btn" title="Toggle Inspector / Simulator">Preview</button>
+            <button type="button" id="open-presets-btn" class="btn btn-sm btn-ghost">
+              ${ICONS.presets}
+              <span>Examples</span>
+            </button>
+            <button type="button" id="new-blank-btn" class="btn btn-sm btn-ghost" title="Start from an empty script">
+              ${ICONS.fileNew}
+              <span>New</span>
+            </button>
+
+            <span class="topbar-sep" aria-hidden="true"></span>
+
+            <div class="icon-btn-pair">
+              <button type="button" id="toggle-left-pane" class="btn btn-icon active-pane-btn" title="Toggle Blocks Sidebar" aria-label="Toggle Blocks Sidebar">${ICONS.panelLeft}</button>
+              <button type="button" id="toggle-right-pane" class="btn btn-icon active-pane-btn" title="Toggle Inspector & Simulator" aria-label="Toggle Inspector">${ICONS.panelRight}</button>
             </div>
-            <div class="btn-group">
-              <button type="button" id="undo-btn" class="btn btn-sm btn-ghost" title="Undo (Ctrl+Z)" aria-label="Undo">
+
+            <div class="icon-btn-pair">
+              <button type="button" id="undo-btn" class="btn btn-icon" title="Undo (Ctrl+Z)" aria-label="Undo">
                 ${ICONS.undo}
               </button>
-              <button type="button" id="redo-btn" class="btn btn-sm btn-ghost" title="Redo (Ctrl+Y)" aria-label="Redo">
+              <button type="button" id="redo-btn" class="btn btn-icon" title="Redo (Ctrl+Y)" aria-label="Redo">
                 ${ICONS.redo}
               </button>
             </div>
-            <button type="button" id="json-blueprint-btn" class="btn btn-sm btn-ghost" title="Save or load block blueprint JSON">
-              ${ICONS.upload}
+
+            <button type="button" id="json-blueprint-btn" class="btn btn-sm btn-ghost" title="Export or import blueprint JSON">
               <span class="hide-narrow">JSON</span>
             </button>
             <button type="button" id="guide-shortcut-btn" class="btn btn-sm btn-ghost" title="View in-game Space Engineers setup checklist">
-              ${ICONS.help}
               <span class="hide-narrow">Setup</span>
             </button>
+
             <button type="button" id="copy-se-script-btn" class="btn btn-sm btn-primary">
               ${ICONS.copy}
               <span>Copy C#</span>

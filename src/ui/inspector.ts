@@ -231,21 +231,26 @@ export class InspectorView {
               <select id="sim-connector-select" class="se-input se-select">
                 <option value="Unconnected" ${this.simInputs.connectorStatus === 'Unconnected' ? 'selected' : ''}>Unconnected</option>
                 <option value="Connectable" ${this.simInputs.connectorStatus === 'Connectable' ? 'selected' : ''}>Ready to Lock</option>
-                <option value="Connected" ${this.simInputs.connectorStatus === 'Connected' ? 'selected' : ''}>Connected (Docked)</option>
+                <option value="Connected" ${this.simInputs.connectorStatus === 'Connected' ? 'selected' : ''}>Connected</option>
               </select>
             </label>
-            <label class="sim-toggle-pill">
-              <input type="checkbox" id="sim-turret-chk" ${this.simInputs.turretHasTarget ? 'checked' : ''} />
-              <span>Turret Has Target</span>
-            </label>
-            <label class="sim-toggle-pill">
-              <input type="checkbox" id="sim-sensor-chk" ${this.simInputs.sensorActive ? 'checked' : ''} />
-              <span>Sensor Detecting</span>
-            </label>
-            <label class="sim-toggle-pill">
-              <input type="checkbox" id="sim-door-chk" ${this.simInputs.doorOpen ? 'checked' : ''} />
-              <span>Door Open</span>
-            </label>
+            <div class="sim-switch-grid">
+              <label class="ui-switch">
+                <input type="checkbox" id="sim-turret-chk" ${this.simInputs.turretHasTarget ? 'checked' : ''} />
+                <span class="ui-switch-track"></span>
+                <span>Turret Target</span>
+              </label>
+              <label class="ui-switch">
+                <input type="checkbox" id="sim-sensor-chk" ${this.simInputs.sensorActive ? 'checked' : ''} />
+                <span class="ui-switch-track"></span>
+                <span>Sensor Active</span>
+              </label>
+              <label class="ui-switch">
+                <input type="checkbox" id="sim-door-chk" ${this.simInputs.doorOpen ? 'checked' : ''} />
+                <span class="ui-switch-track"></span>
+                <span>Door Open</span>
+              </label>
+            </div>
           </div>
           <label class="sim-cdata-row">
             <span>PB CustomData (INI)</span>
@@ -598,7 +603,7 @@ export class InspectorView {
             <li>Enable <strong>In-Game Scripts</strong> in your World Settings → Advanced (Experimental Mode ON).</li>
             <li>Build a <strong>Programmable Block</strong> on your ship or station and ensure ownership matches your blocks.</li>
             <li>Open the ship Terminal (<strong>K</strong>), select the Programmable Block, and click <strong>Edit</strong>.</li>
-            <li>Click <strong>Copy C# for SE</strong> above, clear the editor (<code>Ctrl+A</code>), and paste (<code>Ctrl+V</code>).</li>
+            <li>Click <strong>Copy C#</strong> above, clear the editor (<code>Ctrl+A</code>), and paste (<code>Ctrl+V</code>).</li>
             <li>Click <strong>Check Code</strong> (should say <em>Compilation successful</em>), then click <strong>OK</strong>. Your script starts automatically!</li>
           </ol>
         </div>

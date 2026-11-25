@@ -1,6 +1,6 @@
 import { BLOCK_MAP, CATEGORY_MAP } from '../blocks/catalog';
 import { countAllBlocks, type ContainerSlot, type DropTarget, type ProjectStore } from '../state/store';
-import type { BlockFieldSchema, ScriptBlock, UpdateFrequencyOption } from '../types';
+import type { BlockFieldSchema, BlockType, ScriptBlock, UpdateFrequencyOption } from '../types';
 import { getActiveDrag, setActiveDrag } from './dragState';
 import { ICONS } from './icons';
 import { VariableAutocompleteController } from './varAutocomplete';
@@ -24,6 +24,54 @@ interface BoardSection {
   entries: Array<{ block: ScriptBlock; rootIndex: number }>;
 }
 
+const SHORT_LABELS: Record<BlockType, string> = {
+  if_condition: 'If',
+  for_each_block: 'For each',
+  repeat_times: 'Repeat',
+  define_function: 'Function',
+  call_function: 'Call',
+  on_argument: 'On arg',
+  on_setup: 'On start',
+  cooldown: 'Every',
+  comment: '//',
+  set_variable: 'Set',
+  math_op: 'Math',
+  change_variable: 'Change',
+  read_block_prop: 'Read prop',
+  custom_data_io: 'INI / Data',
+  gui_screen: 'GUI Screen',
+  gui_header: 'Header',
+  gui_bar: 'Bar',
+  gui_gauges: 'Gauges',
+  gui_metrics: 'Stat Cards',
+  gui_alert: 'Alert',
+  gui_inventory: 'Inventory',
+  gui_text: 'Text',
+  gui_divider: 'Divider',
+  lcd_inventory: 'LCD Inv',
+  lcd_power: 'LCD Power',
+  lcd_gas: 'LCD Gas',
+  lcd_clear: 'LCD Clear',
+  lcd_write: 'LCD Write',
+  lcd_style: 'LCD Style',
+  pb_echo: 'Echo',
+  door_action: 'Door',
+  airvent_action: 'Air vent',
+  light_action: 'Light',
+  block_power: 'Power',
+  battery_mode: 'Battery',
+  tank_stockpile: 'Tank',
+  connector_action: 'Connector',
+  thruster_override: 'Thrusters',
+  loop_block_action: 'Loop block',
+  terminal_action: 'Terminal',
+  sound_action: 'Sound',
+  timer_action: 'Timer',
+  broadcast_text: 'Broadcast',
+  piston_action: 'Piston',
+  rotor_action: 'Rotor',
+};
+
 export class WorkspaceView {
   private container: HTMLElement;
   private store: ProjectStore;
@@ -33,7 +81,6 @@ export class WorkspaceView {
 
   private layoutMode: WorkspaceLayoutMode = 'board';
   private headerEl!: HTMLElement;
-  private jumpBarEl!: HTMLElement;
   private stackHostEl!: HTMLElement;
 
   constructor(opts: WorkspaceOptions) {
@@ -51,13 +98,11 @@ export class WorkspaceView {
   private mount(): void {
     this.container.innerHTML = `
       <div class="workspace-hat" id="workspace-hat"></div>
-      <div class="workspace-jump-bar" id="workspace-jump-bar" hidden></div>
       <div class="workspace-scroll" id="workspace-scroll">
         <div class="workspace-stack-host" id="workspace-stack-host"></div>
       </div>
     `;
     this.headerEl = this.container.querySelector('#workspace-hat') as HTMLElement;
-    this.jumpBarEl = this.container.querySelector('#workspace-jump-bar') as HTMLElement;
     this.stackHostEl = this.container.querySelector('#workspace-stack-host') as HTMLElement;
 
     const scrollEl = this.container.querySelector('#workspace-scroll') as HTMLElement;
@@ -72,8 +117,10 @@ export class WorkspaceView {
 
   render(): void {
     this.varAc.closeMenu();
-    this.renderHat();
-    this.renderStack();
+    const project = this.store.getProject();
+    const sections = this.buildBoardSections(project.blocks);
+    this.renderHat(sections);
+    this.renderStack(sections);
   }
 
   highlightBlock(blockId: string): void {
@@ -98,20 +145,20 @@ export class WorkspaceView {
 
     rootBlocks.forEach((block, rootIndex) => {
       if (isDedicatedModule(block)) {
-        let badge = 'MOD';
+        let badge = 'mod';
         let title = BLOCK_MAP[block.type]?.label ?? block.type;
-        let color = CATEGORY_MAP[BLOCK_MAP[block.type]?.category ?? 'control']?.color ?? '#C98A3A';
+        let color = CATEGORY_MAP[BLOCK_MAP[block.type]?.category ?? 'control']?.color ?? '#E09132';
         if (block.type === 'define_function') {
-          badge = 'FN';
+          badge = 'fn';
           title = String(block.params.name || 'Routine');
         } else if (block.type === 'on_setup') {
-          badge = 'INIT';
-          title = 'On Script Start';
+          badge = 'init';
+          title = 'On Start';
         } else if (block.type === 'on_argument') {
-          badge = 'ARG';
+          badge = 'arg';
           title = `"${String(block.params.argument || 'toggle')}"`;
         } else if (block.type === 'gui_screen') {
-          badge = 'HUD';
+          badge = 'hud';
           title = String(block.params.lcdName || 'Status LCD');
           color = CATEGORY_MAP.gui.color;
         }
@@ -129,13 +176,12 @@ export class WorkspaceView {
     });
 
     if (mainEntries.length > 0) {
-      // Place Main Loop right after functions/setup, before HUD screens for clear reading order
-      const firstHudIdx = sections.findIndex((s) => s.badge === 'HUD');
+      const firstHudIdx = sections.findIndex((s) => s.badge === 'hud');
       const mainSec: BoardSection = {
         id: 'sec_main_loop',
-        badge: 'MAIN',
+        badge: 'main',
         title: 'Main Loop',
-        color: '#D98A2B',
+        color: '#E09132',
         kind: 'main',
         entries: mainEntries,
       };
@@ -146,37 +192,52 @@ export class WorkspaceView {
     return sections;
   }
 
-  private renderHat(): void {
+  private renderHat(sections: BoardSection[]): void {
     const project = this.store.getProject();
-    const total = countAllBlocks(project.blocks);
+
+    const jumpLinksHtml =
+      sections.length >= 2
+        ? `<div class="hat-jump-strip" aria-label="Jump to module">
+            ${sections
+              .map(
+                (s) => `
+              <button type="button" class="jump-link" data-jump-sec="${s.id}" style="--pill-color:${s.color}">
+                <span class="jump-dot"></span>
+                <span>${this.escapeHtml(s.title)}</span>
+              </button>
+            `
+              )
+              .join('')}
+          </div>`
+        : '<div class="hat-spacer"></div>';
 
     this.headerEl.innerHTML = `
       <div class="hat-left">
-        <span class="hat-badge">MAIN</span>
         <select id="project-freq-select" class="hat-select" title="Script execution rate in Space Engineers">
-          <option value="Update100" ${project.updateFrequency === 'Update100' ? 'selected' : ''}>1.6s (Update100)</option>
-          <option value="Update10" ${project.updateFrequency === 'Update10' ? 'selected' : ''}>0.16s (Update10)</option>
-          <option value="Update1" ${project.updateFrequency === 'Update1' ? 'selected' : ''}>Tick (Update1)</option>
+          <option value="Update100" ${project.updateFrequency === 'Update100' ? 'selected' : ''}>1.6s · Update100</option>
+          <option value="Update10" ${project.updateFrequency === 'Update10' ? 'selected' : ''}>0.16s · Update10</option>
+          <option value="Update1" ${project.updateFrequency === 'Update1' ? 'selected' : ''}>Tick · Update1</option>
           <option value="None" ${project.updateFrequency === 'None' ? 'selected' : ''}>Manual Only</option>
         </select>
-        <label class="hat-checkbox" title="Uses Me.IsSameConstructAs so docked ships do not interfere">
+        <label class="ui-switch ui-switch-sm" title="Uses Me.IsSameConstructAs so docked ships do not interfere">
           <input id="project-same-grid" type="checkbox" ${project.sameGridOnly ? 'checked' : ''} />
-          <span>Same Grid</span>
+          <span class="ui-switch-track"></span>
+          <span>Same grid</span>
         </label>
       </div>
+      ${jumpLinksHtml}
       <div class="hat-right">
         <div class="layout-seg" role="group" aria-label="Workspace layout">
-          <button type="button" id="layout-board-btn" class="layout-seg-btn ${this.layoutMode === 'board' ? 'active' : ''}" title="Side-by-side multi-column modules (less scrolling)">Board</button>
-          <button type="button" id="layout-list-btn" class="layout-seg-btn ${this.layoutMode === 'list' ? 'active' : ''}" title="Classic single-column top-down outline">List</button>
+          <button type="button" id="layout-board-btn" class="layout-seg-btn ${this.layoutMode === 'board' ? 'active' : ''}" title="Side-by-side modules">Board</button>
+          <button type="button" id="layout-list-btn" class="layout-seg-btn ${this.layoutMode === 'list' ? 'active' : ''}" title="Single-column outline">List</button>
         </div>
-        <button type="button" id="ws-add-fn-btn" class="hat-tool-btn" title="Add a reusable Define Function subroutine">+ Fn</button>
-        <button type="button" id="ws-collapse-all-btn" class="hat-tool-btn" title="Collapse all container blocks">Fold</button>
-        <button type="button" id="ws-expand-all-btn" class="hat-tool-btn" title="Expand all container blocks">Unfold</button>
-        <button type="button" id="open-vars-ref-btn" class="hat-vars-btn" title="Browse & insert live ship variables like {speed}, {battery}, {_name} — or type { in any field">
+        <button type="button" id="ws-add-fn-btn" class="hat-tool-btn" title="Add a reusable function">+ Fn</button>
+        <button type="button" id="ws-collapse-all-btn" class="hat-tool-btn" title="Collapse all containers">Fold</button>
+        <button type="button" id="ws-expand-all-btn" class="hat-tool-btn" title="Expand all containers">Unfold</button>
+        <button type="button" id="open-vars-ref-btn" class="hat-vars-btn" title="Browse live ship variables like {speed}, {battery}, {_name} — or type { in any field">
           <span class="hat-vars-brace">{ }</span>
           <span>Vars</span>
         </button>
-        <span class="hat-metric">${total}</span>
       </div>
     `;
 
@@ -190,6 +251,23 @@ export class WorkspaceView {
     const sameGridChk = this.headerEl.querySelector('#project-same-grid') as HTMLInputElement;
     sameGridChk.addEventListener('change', () => {
       this.store.updateProjectMeta({ sameGridOnly: sameGridChk.checked });
+    });
+
+    this.headerEl.querySelectorAll<HTMLButtonElement>('.jump-link').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const secId = btn.dataset.jumpSec;
+        if (!secId) return;
+        const target =
+          this.stackHostEl.querySelector<HTMLElement>(`[data-section-id="${CSS.escape(secId)}"]`) ||
+          this.stackHostEl.querySelector<HTMLElement>(
+            `[data-block-id="${CSS.escape(secId.replace(/^sec_/, ''))}"]`
+          );
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+          target.classList.add('flash-highlight');
+          setTimeout(() => target.classList.remove('flash-highlight'), 900);
+        }
+      });
     });
 
     this.headerEl.querySelector('#layout-board-btn')?.addEventListener('click', () => {
@@ -221,67 +299,29 @@ export class WorkspaceView {
     });
   }
 
-  private renderJumpBar(sections: BoardSection[]): void {
-    if (sections.length < 2) {
-      this.jumpBarEl.hidden = true;
-      this.jumpBarEl.innerHTML = '';
-      return;
-    }
-
-    this.jumpBarEl.hidden = false;
-    this.jumpBarEl.innerHTML = sections
-      .map(
-        (s) => `
-        <button type="button" class="jump-pill" data-jump-sec="${s.id}" style="--pill-color:${s.color}">
-          <span class="jump-pill-badge">${s.badge}</span>
-          <span class="jump-pill-title">${this.escapeHtml(s.title)}</span>
-        </button>
-      `
-      )
-      .join('');
-
-    this.jumpBarEl.querySelectorAll<HTMLButtonElement>('.jump-pill').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const secId = btn.dataset.jumpSec;
-        if (!secId) return;
-        const target =
-          this.stackHostEl.querySelector<HTMLElement>(`[data-section-id="${CSS.escape(secId)}"]`) ||
-          this.stackHostEl.querySelector<HTMLElement>(
-            `[data-block-id="${CSS.escape(secId.replace(/^sec_/, ''))}"]`
-          );
-        if (target) {
-          target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-          target.classList.add('flash-highlight');
-          setTimeout(() => target.classList.remove('flash-highlight'), 900);
-        }
-      });
-    });
-  }
-
-  private renderStack(): void {
+  private renderStack(sections: BoardSection[]): void {
     const project = this.store.getProject();
     this.stackHostEl.innerHTML = '';
 
     if (project.blocks.length === 0) {
-      this.jumpBarEl.hidden = true;
       const empty = document.createElement('div');
       empty.className = 'workspace-empty';
       empty.innerHTML = `
-        <div class="empty-kicker">EMPTY PROGRAMMABLE BLOCK</div>
-        <h3 class="empty-title">Build custom ship logic from native blocks or start from an example</h3>
+        <div class="empty-kicker">EMPTY SCRIPT</div>
+        <h3 class="empty-title">Start from an example or drag blocks from the sidebar</h3>
         <p class="empty-desc">
-          Combine Loops, Functions, Math, CustomData INI, Hardware Controls, and Vector GUI widgets — zero preset lock-in.
+          Combine loops, conditions, math, hardware controls, and vector LCD screens — then copy the generated C# straight into a Programmable Block.
         </p>
         <div class="empty-actions">
-          <button type="button" class="btn btn-primary" id="empty-load-native">Load Native Power Balancer</button>
-          <button type="button" class="btn btn-secondary" id="empty-load-hud">Load Bridge Telemetry HUD</button>
-          <button type="button" class="btn btn-ghost" id="empty-browse-presets">Browse All 11 Examples</button>
+          <button type="button" class="btn btn-sm btn-primary" id="empty-load-hud">Bridge Telemetry HUD</button>
+          <button type="button" class="btn btn-sm btn-secondary" id="empty-load-power">Adaptive Power &amp; Load Shedding</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="empty-browse-presets">Browse All Examples</button>
         </div>
       `;
       this.attachDropZoneHandlers(empty, { parentId: null, slot: 'root', index: 0 });
       this.stackHostEl.appendChild(empty);
 
-      empty.querySelector('#empty-load-native')?.addEventListener('click', () => {
+      empty.querySelector('#empty-load-power')?.addEventListener('click', () => {
         this.store.loadPreset('native-power-grid-balancer');
       });
       empty.querySelector('#empty-load-hud')?.addEventListener('click', () => {
@@ -293,55 +333,165 @@ export class WorkspaceView {
       return;
     }
 
-    const sections = this.buildBoardSections(project.blocks);
-    this.renderJumpBar(sections);
-
-    if (this.layoutMode === 'board' && sections.length >= 2) {
+    if (this.layoutMode === 'board') {
       const board = document.createElement('div');
-      board.className = 'workspace-board';
+      board.className = sections.length === 1 ? 'workspace-board is-single' : 'workspace-board';
       const totalRoot = project.blocks.length;
 
       for (const sec of sections) {
-        const col = document.createElement('div');
-        col.className = 'board-module';
-        col.dataset.sectionId = sec.id;
-        col.style.setProperty('--mod-color', sec.color);
-
-        const modCount = sec.entries.reduce((acc, e) => acc + countAllBlocks([e.block]), 0);
-        const modHead = document.createElement('div');
-        modHead.className = 'board-module-head';
-        modHead.innerHTML = `
-          <span class="board-mod-badge">${sec.badge}</span>
-          <span class="board-mod-title">${this.escapeHtml(sec.title)}</span>
-          <span class="board-mod-count">${modCount} blk</span>
-        `;
-        col.appendChild(modHead);
-
-        const modBody = document.createElement('div');
-        modBody.className = 'board-module-body';
-
-        if (sec.kind === 'main') {
-          sec.entries.forEach((entry) => {
-            modBody.appendChild(this.createDropZone({ parentId: null, slot: 'root', index: entry.rootIndex }, false));
-            modBody.appendChild(this.renderBlockNode(entry.block, entry.rootIndex, totalRoot));
-          });
-          const lastIdx = sec.entries[sec.entries.length - 1].rootIndex + 1;
-          modBody.appendChild(this.createDropZone({ parentId: null, slot: 'root', index: lastIdx }, false));
-        } else {
+        if (sec.kind === 'module') {
           const entry = sec.entries[0];
-          modBody.appendChild(this.renderBlockNode(entry.block, entry.rootIndex, totalRoot));
+          board.appendChild(this.renderMergedModuleSheet(sec, entry.block, entry.rootIndex, totalRoot));
+        } else {
+          board.appendChild(this.renderMainLoopSheet(sec, totalRoot));
         }
-
-        col.appendChild(modBody);
-        board.appendChild(col);
       }
 
       this.stackHostEl.appendChild(board);
       return;
     }
 
-    const listEl = this.renderBlockList(project.blocks, null, 'root');
-    this.stackHostEl.appendChild(listEl);
+    const listSheet = document.createElement('div');
+    listSheet.className = 'outline-sheet';
+    listSheet.appendChild(this.renderBlockList(project.blocks, null, 'root'));
+    this.stackHostEl.appendChild(listSheet);
+  }
+
+  private renderMainLoopSheet(sec: BoardSection, totalRoot: number): HTMLElement {
+    const col = document.createElement('section');
+    col.className = 'board-module';
+    col.dataset.sectionId = sec.id;
+    col.style.setProperty('--mod-color', sec.color);
+
+    const modCount = sec.entries.reduce((acc, e) => acc + countAllBlocks([e.block]), 0);
+    const modHead = document.createElement('div');
+    modHead.className = 'board-module-head';
+    modHead.innerHTML = `
+      <span class="board-mod-badge">${sec.badge}</span>
+      <span class="board-mod-title">${this.escapeHtml(sec.title)}</span>
+      <span class="board-mod-count">${modCount}</span>
+    `;
+    col.appendChild(modHead);
+
+    const modBody = document.createElement('div');
+    modBody.className = 'board-module-body';
+
+    sec.entries.forEach((entry) => {
+      modBody.appendChild(this.createDropZone({ parentId: null, slot: 'root', index: entry.rootIndex }, false));
+      modBody.appendChild(this.renderBlockNode(entry.block, entry.rootIndex, totalRoot));
+    });
+    const lastIdx = sec.entries[sec.entries.length - 1].rootIndex + 1;
+    modBody.appendChild(this.createDropZone({ parentId: null, slot: 'root', index: lastIdx }, false));
+
+    col.appendChild(modBody);
+    return col;
+  }
+
+  /**
+   * Renders a dedicated root module (Function, GUI Screen, On Start, On Argument)
+   * as a SINGLE clean sheet where the sheet header IS the block's own header —
+   * completely eliminating duplicate box-in-box headers.
+   */
+  private renderMergedModuleSheet(
+    sec: BoardSection,
+    block: ScriptBlock,
+    rootIndex: number,
+    totalRoot: number
+  ): HTMLElement {
+    const def = BLOCK_MAP[block.type];
+    const isSelected = this.store.getSelectedBlockId() === block.id;
+    const childCount = countAllBlocks(block.children ?? []);
+
+    const sheet = document.createElement('section');
+    sheet.className = [
+      'board-module',
+      'is-merged-module',
+      'se-block',
+      'is-container',
+      isSelected ? 'is-selected' : '',
+      block.disabled ? 'is-disabled' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    sheet.dataset.sectionId = sec.id;
+    sheet.dataset.blockId = block.id;
+    sheet.dataset.blockType = block.type;
+    sheet.style.setProperty('--mod-color', sec.color);
+    sheet.style.setProperty('--block-color', sec.color);
+
+    this.wireBlockInteractions(sheet, block);
+
+    const head = document.createElement('div');
+    head.className = 'board-module-head se-block-row';
+
+    const lead = document.createElement('div');
+    lead.className = 'se-block-lead';
+
+    const grip = document.createElement('span');
+    grip.className = 'se-block-grip';
+    grip.innerHTML = ICONS.grip;
+    grip.title = 'Drag module to reorder';
+    lead.appendChild(grip);
+
+    const collapseBtn = document.createElement('button');
+    collapseBtn.type = 'button';
+    collapseBtn.className = `se-collapse-btn ${block.collapsed ? 'is-collapsed' : ''}`;
+    collapseBtn.innerHTML = ICONS.chevron;
+    collapseBtn.title = block.collapsed ? 'Expand module' : 'Collapse module';
+    collapseBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      this.store.toggleBlockCollapsed(block.id);
+    });
+    lead.appendChild(collapseBtn);
+
+    const badge = document.createElement('span');
+    badge.className = 'board-mod-badge';
+    badge.textContent = sec.badge;
+    badge.title = `${def.label} — ${def.shortDesc}`;
+    lead.appendChild(badge);
+
+    if (block.type === 'on_setup') {
+      const staticTitle = document.createElement('span');
+      staticTitle.className = 'board-mod-title';
+      staticTitle.textContent = 'On Script Start';
+      lead.appendChild(staticTitle);
+    }
+
+    if (block.disabled) {
+      const muted = document.createElement('span');
+      muted.className = 'se-muted-tag';
+      muted.textContent = 'OFF';
+      lead.appendChild(muted);
+    }
+
+    head.appendChild(lead);
+
+    const visibleFields = def.fields.filter((f) => !f.visibleWhen || f.visibleWhen(block.params));
+    if (visibleFields.length > 0) {
+      const fieldsRow = document.createElement('div');
+      fieldsRow.className = 'se-block-fields module-head-fields';
+      for (const field of visibleFields) {
+        fieldsRow.appendChild(this.renderFieldControl(block, field));
+      }
+      head.appendChild(fieldsRow);
+    }
+
+    const countEl = document.createElement('span');
+    countEl.className = 'board-mod-count';
+    countEl.textContent = `${childCount}`;
+    head.appendChild(countEl);
+
+    head.appendChild(this.buildActionBar(block, def.supportsElse ?? false, rootIndex, totalRoot));
+    sheet.appendChild(head);
+
+    if (!block.collapsed) {
+      const body = document.createElement('div');
+      body.className = 'board-module-body';
+      body.appendChild(this.renderBlockList(block.children ?? [], block.id, 'children'));
+      sheet.appendChild(body);
+    }
+
+    return sheet;
   }
 
   private renderBlockList(
@@ -366,7 +516,7 @@ export class WorkspaceView {
     const dz = document.createElement('div');
     dz.className = isEmptySlot ? 'drop-zone drop-zone-empty' : 'drop-zone';
     if (isEmptySlot) {
-      dz.innerHTML = `<span>Drop block here or select parent &amp; click toolbox</span>`;
+      dz.innerHTML = `<span>Drop block here or select parent &amp; click sidebar</span>`;
     }
     this.attachDropZoneHandlers(dz, target);
     return dz;
@@ -404,28 +554,10 @@ export class WorkspaceView {
     });
   }
 
-  private renderBlockNode(block: ScriptBlock, index: number, siblingCount: number): HTMLElement {
-    const def = BLOCK_MAP[block.type];
-    const cat = CATEGORY_MAP[def.category];
-    const isSelected = this.store.getSelectedBlockId() === block.id;
+  private wireBlockInteractions(el: HTMLElement, block: ScriptBlock): void {
+    el.draggable = true;
 
-    const card = document.createElement('div');
-    card.className = [
-      'se-block',
-      def.isContainer ? 'is-container' : 'is-leaf',
-      isSelected ? 'is-selected' : '',
-      block.disabled ? 'is-disabled' : '',
-      block.type === 'comment' ? 'is-comment' : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
-    card.dataset.blockId = block.id;
-    card.dataset.blockType = block.type;
-    card.style.setProperty('--block-color', cat.color);
-    card.style.setProperty('--block-bg-tint', cat.accentBg);
-    card.draggable = true;
-
-    card.addEventListener('dragstart', (ev) => {
+    el.addEventListener('dragstart', (ev) => {
       const targetEl = ev.target as HTMLElement | null;
       if (targetEl && ['INPUT', 'SELECT', 'TEXTAREA', 'OPTION', 'BUTTON'].includes(targetEl.tagName)) {
         ev.preventDefault();
@@ -433,20 +565,20 @@ export class WorkspaceView {
       }
       ev.stopPropagation();
       setActiveDrag({ kind: 'existing', blockId: block.id });
-      card.classList.add('is-dragging');
+      el.classList.add('is-dragging');
       if (ev.dataTransfer) {
         ev.dataTransfer.effectAllowed = 'move';
         ev.dataTransfer.setData('text/plain', `existing:${block.id}`);
       }
     });
 
-    card.addEventListener('dragend', (ev) => {
+    el.addEventListener('dragend', (ev) => {
       ev.stopPropagation();
-      card.classList.remove('is-dragging');
+      el.classList.remove('is-dragging');
       setActiveDrag(null);
     });
 
-    card.addEventListener('click', (ev) => {
+    el.addEventListener('click', (ev) => {
       ev.stopPropagation();
       if (this.store.getSelectedBlockId() !== block.id) {
         const targetEl = ev.target as HTMLElement | null;
@@ -457,83 +589,27 @@ export class WorkspaceView {
         );
         if (inControl) {
           this.store.selectBlock(block.id, true);
-          this.stackHostEl.querySelectorAll('.se-block.is-selected').forEach((el) => {
-            el.classList.remove('is-selected');
+          this.stackHostEl.querySelectorAll('.se-block.is-selected').forEach((node) => {
+            node.classList.remove('is-selected');
           });
-          card.classList.add('is-selected');
+          el.classList.add('is-selected');
         } else {
           this.store.selectBlock(block.id);
         }
       }
     });
+  }
 
-    // Compact unified top row: [grip] [chevron?] [label] [inline fields] [collapsed badge?] [actions]
-    const topRow = document.createElement('div');
-    topRow.className = 'se-block-row';
-
-    const lead = document.createElement('div');
-    lead.className = 'se-block-lead';
-
-    const grip = document.createElement('span');
-    grip.className = 'se-block-grip';
-    grip.innerHTML = ICONS.grip;
-    grip.title = 'Drag to reorder or nest';
-    lead.appendChild(grip);
-
-    if (def.isContainer) {
-      const collapseBtn = document.createElement('button');
-      collapseBtn.type = 'button';
-      collapseBtn.className = `se-collapse-btn ${block.collapsed ? 'is-collapsed' : ''}`;
-      collapseBtn.innerHTML = ICONS.chevron;
-      collapseBtn.title = block.collapsed ? 'Expand block' : 'Collapse block';
-      collapseBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        this.store.toggleBlockCollapsed(block.id);
-      });
-      lead.appendChild(collapseBtn);
-    }
-
-    const labelEl = document.createElement('span');
-    labelEl.className = 'se-block-label';
-    labelEl.textContent = def.label;
-    lead.appendChild(labelEl);
-
-    if (block.disabled) {
-      const mutedBadge = document.createElement('span');
-      mutedBadge.className = 'se-muted-tag';
-      mutedBadge.textContent = 'OFF';
-      lead.appendChild(mutedBadge);
-    }
-
-    if (def.isContainer && block.collapsed) {
-      const childTotal =
-        countAllBlocks(block.children ?? []) + countAllBlocks(block.elseChildren ?? []);
-      const foldBadge = document.createElement('span');
-      foldBadge.className = 'se-fold-count';
-      foldBadge.textContent = `${childTotal} blk`;
-      lead.appendChild(foldBadge);
-    }
-
-    topRow.appendChild(lead);
-
-    // Inline parameter fields directly inside the same compact row!
-    const visibleFields = def.fields.filter(
-      (f) => !f.visibleWhen || f.visibleWhen(block.params)
-    );
-    if (visibleFields.length > 0) {
-      const fieldsRow = document.createElement('div');
-      fieldsRow.className = 'se-block-fields';
-      for (const field of visibleFields) {
-        fieldsRow.appendChild(this.renderFieldControl(block, field));
-      }
-      topRow.appendChild(fieldsRow);
-    }
-
-    // Hover/selected compact action bar
+  private buildActionBar(
+    block: ScriptBlock,
+    supportsElse: boolean,
+    index: number,
+    siblingCount: number
+  ): HTMLElement {
     const actions = document.createElement('div');
     actions.className = 'se-block-actions';
 
-    if (def.supportsElse) {
+    if (supportsElse) {
       const hasElse = Boolean(block.params.hasElse);
       const elseBtn = document.createElement('button');
       elseBtn.type = 'button';
@@ -593,37 +669,123 @@ export class WorkspaceView {
       mkBtn(ICONS.trash, 'Delete', () => this.store.deleteBlock(block.id), 'danger')
     );
 
-    topRow.appendChild(actions);
-    card.appendChild(topRow);
+    return actions;
+  }
 
-    // Container body
+  private renderBlockNode(block: ScriptBlock, index: number, siblingCount: number): HTMLElement {
+    const def = BLOCK_MAP[block.type];
+    const cat = CATEGORY_MAP[def.category];
+    const isSelected = this.store.getSelectedBlockId() === block.id;
+
+    const rowNode = document.createElement('div');
+    rowNode.className = [
+      'se-block',
+      'se-stmt',
+      def.isContainer ? 'is-container' : 'is-leaf',
+      isSelected ? 'is-selected' : '',
+      block.disabled ? 'is-disabled' : '',
+      block.type === 'comment' ? 'is-comment' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    rowNode.dataset.blockId = block.id;
+    rowNode.dataset.blockType = block.type;
+    rowNode.style.setProperty('--block-color', cat.color);
+    rowNode.style.setProperty('--block-bg-tint', cat.accentBg);
+
+    this.wireBlockInteractions(rowNode, block);
+
+    const topRow = document.createElement('div');
+    topRow.className = 'se-block-row';
+
+    const lead = document.createElement('div');
+    lead.className = 'se-block-lead';
+
+    const grip = document.createElement('span');
+    grip.className = 'se-block-grip';
+    grip.innerHTML = ICONS.grip;
+    grip.title = 'Drag to reorder or nest';
+    lead.appendChild(grip);
+
+    if (def.isContainer) {
+      const collapseBtn = document.createElement('button');
+      collapseBtn.type = 'button';
+      collapseBtn.className = `se-collapse-btn ${block.collapsed ? 'is-collapsed' : ''}`;
+      collapseBtn.innerHTML = ICONS.chevron;
+      collapseBtn.title = block.collapsed ? 'Expand block' : 'Collapse block';
+      collapseBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        this.store.toggleBlockCollapsed(block.id);
+      });
+      lead.appendChild(collapseBtn);
+    }
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'se-block-verb';
+    labelEl.textContent = SHORT_LABELS[block.type] ?? def.label;
+    labelEl.title = `${def.label} — ${def.shortDesc}`;
+    lead.appendChild(labelEl);
+
+    if (block.disabled) {
+      const mutedBadge = document.createElement('span');
+      mutedBadge.className = 'se-muted-tag';
+      mutedBadge.textContent = 'OFF';
+      lead.appendChild(mutedBadge);
+    }
+
+    if (def.isContainer && block.collapsed) {
+      const childTotal =
+        countAllBlocks(block.children ?? []) + countAllBlocks(block.elseChildren ?? []);
+      const foldBadge = document.createElement('span');
+      foldBadge.className = 'se-fold-count';
+      foldBadge.textContent = `${childTotal}`;
+      lead.appendChild(foldBadge);
+    }
+
+    topRow.appendChild(lead);
+
+    const visibleFields = def.fields.filter(
+      (f) => !f.visibleWhen || f.visibleWhen(block.params)
+    );
+    if (visibleFields.length > 0) {
+      const fieldsRow = document.createElement('div');
+      fieldsRow.className = 'se-block-fields';
+      for (const field of visibleFields) {
+        fieldsRow.appendChild(this.renderFieldControl(block, field));
+      }
+      topRow.appendChild(fieldsRow);
+    }
+
+    topRow.appendChild(this.buildActionBar(block, def.supportsElse ?? false, index, siblingCount));
+    rowNode.appendChild(topRow);
+
     if (def.isContainer && !block.collapsed) {
       const bodyWrap = document.createElement('div');
       bodyWrap.className = 'se-container-body';
       if (block.type === 'if_condition') {
         const thenLabel = document.createElement('div');
         thenLabel.className = 'se-branch-label';
-        thenLabel.textContent = 'THEN';
+        thenLabel.textContent = 'then';
         bodyWrap.appendChild(thenLabel);
       }
       bodyWrap.appendChild(this.renderBlockList(block.children ?? [], block.id, 'children'));
-      card.appendChild(bodyWrap);
+      rowNode.appendChild(bodyWrap);
 
       if (def.supportsElse && block.params.hasElse) {
         const elseWrap = document.createElement('div');
         elseWrap.className = 'se-container-body se-else-body';
         const elseLabel = document.createElement('div');
         elseLabel.className = 'se-branch-label se-else-label';
-        elseLabel.textContent = 'ELSE';
+        elseLabel.textContent = 'else';
         elseWrap.appendChild(elseLabel);
         elseWrap.appendChild(
           this.renderBlockList(block.elseChildren ?? [], block.id, 'elseChildren')
         );
-        card.appendChild(elseWrap);
+        rowNode.appendChild(elseWrap);
       }
     }
 
-    return card;
+    return rowNode;
   }
 
   private renderFieldControl(block: ScriptBlock, field: BlockFieldSchema): HTMLElement {
@@ -639,10 +801,14 @@ export class WorkspaceView {
       input.addEventListener('change', () => {
         this.store.updateBlockParam(block.id, field.key, input.checked);
       });
+      const track = document.createElement('span');
+      track.className = 'ui-switch-track';
       const lbl = document.createElement('span');
       lbl.className = 'se-field-label';
       lbl.textContent = field.label;
+      wrap.classList.add('ui-switch', 'ui-switch-xs');
       wrap.appendChild(input);
+      wrap.appendChild(track);
       wrap.appendChild(lbl);
       return wrap;
     }

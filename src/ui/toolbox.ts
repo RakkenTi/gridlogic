@@ -137,8 +137,9 @@ export class ToolboxView {
       item.title = `${def.shortDesc}\nSE API: ${def.seApiSummary}`;
 
       item.innerHTML = `
+        <span class="palette-dot" style="background:${cat.color}"></span>
         <span class="palette-block-title">${this.escapeHtml(def.label)}</span>
-        ${def.isContainer ? '<span class="palette-c-badge">BLK</span>' : ''}
+        ${def.isContainer ? '<span class="palette-c-badge" title="Container block">{ }</span>' : ''}
         <button type="button" class="palette-add-btn" aria-label="Add ${this.escapeHtml(def.label)}" title="Insert block">
           ${ICONS.plus}
         </button>

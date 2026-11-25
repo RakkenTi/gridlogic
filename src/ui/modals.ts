@@ -40,16 +40,16 @@ export class PresetsModal {
       <div class="modal-dialog modal-lg" role="dialog" aria-modal="true" aria-labelledby="presets-modal-title">
         <div class="modal-header">
           <div>
-            <h2 id="presets-modal-title" class="modal-title">Space Engineers Preset Scripts</h2>
-            <p class="modal-subtitle">Load a ready-to-paste ship script and customize its blocks, names, or thresholds</p>
+            <h2 id="presets-modal-title" class="modal-title">Example Scripts</h2>
+            <p class="modal-subtitle">Load a ready-to-use ship script and adjust block names, thresholds, or layout for your build.</p>
           </div>
-          <button type="button" class="se-icon-btn modal-close-btn" aria-label="Close presets">${ICONS.close}</button>
+          <button type="button" class="se-icon-btn modal-close-btn" aria-label="Close examples">${ICONS.close}</button>
         </div>
         <div class="preset-filter-bar">
           ${categories
             .map(
               (c) => `
-            <button type="button" class="cat-pill ${this.activeFilter === c ? 'active' : ''}" data-pcat="${c}">${c}</button>
+            <button type="button" class="filter-tab ${this.activeFilter === c ? 'active' : ''}" data-pcat="${c}">${c}</button>
           `
             )
             .join('')}
@@ -67,9 +67,9 @@ export class PresetsModal {
         this.render();
       });
     });
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-load-preset]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.dataset.loadPreset;
+    this.backdrop.querySelectorAll<HTMLElement>('.preset-card[data-load-preset]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const id = el.dataset.loadPreset;
         if (id) {
           this.onSelect(id);
           this.close();
@@ -80,25 +80,18 @@ export class PresetsModal {
 
   private renderCard(preset: PresetScript): string {
     const blocks = countAllBlocks(preset.project.blocks);
-    const nativeBadge =
-      preset.tier === 'native'
-        ? '<span class="preset-native-tag">100% NATIVE</span>'
-        : '';
     return `
-      <article class="preset-card ${preset.tier === 'native' ? 'is-native' : ''}">
+      <article class="preset-card" data-load-preset="${preset.id}">
         <div class="preset-card-top">
           <span class="preset-cat">${preset.category}</span>
-          <span class="preset-top-right">
-            ${nativeBadge}
-            <span class="preset-diff diff-${preset.difficulty.toLowerCase()}">${preset.difficulty}</span>
-          </span>
+          <span class="preset-diff diff-${preset.difficulty.toLowerCase()}">${preset.difficulty}</span>
         </div>
         <h3 class="preset-name">${preset.name}</h3>
         <p class="preset-summary">${preset.summary}</p>
-        <div class="preset-hint"><strong>Setup:</strong> ${preset.setupHint}</div>
+        <div class="preset-hint"><span class="preset-hint-lbl">Setup</span> ${preset.setupHint}</div>
         <div class="preset-card-footer">
           <span class="preset-meta">${blocks} blocks · ${preset.project.updateFrequency}</span>
-          <button type="button" class="btn btn-sm btn-primary" data-load-preset="${preset.id}">Load</button>
+          <button type="button" class="btn btn-xs btn-secondary preset-open-btn">Open</button>
         </div>
       </article>
     `;

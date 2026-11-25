@@ -178,14 +178,12 @@ export interface PresetScript {
   id: string;
   name: string;
   category:
-    | 'Native Logic'
     | 'Telemetry & HUD'
     | 'Inventory & Cargo'
     | 'Airlocks & Safety'
     | 'Power & Docking'
     | 'Combat & Alerts';
   difficulty: 'Beginner' | 'Intermediate' | 'Advanced';
-  tier?: 'native' | 'starter';
   summary: string;
   setupHint: string;
   project: ScriptProject;

@@ -131,16 +131,15 @@ export const PRESET_SCRIPTS: PresetScript[] = [
   {
     id: 'native-power-grid-balancer',
     name: 'Adaptive Power & Load Shedding',
-    category: 'Native Logic',
+    category: 'Power & Docking',
     difficulty: 'Advanced',
-    tier: 'native',
     summary:
-      '100% native composable logic: reads minBatt from PB CustomData INI, computes net solar/reactor math, runs compound AND conditions, calls reusable Functions with For-Each loops to shed/restore [Aux] blocks, and drives a live HUD.',
+      'Tracks battery charge and solar-to-reactor balance. Shuts down [Aux] blocks and starts your backup reactor when charge drops below your CustomData threshold while undocked.',
     setupHint:
-      'Add "[Aux]" to any non-essential blocks (assemblers, refineries, floodlights), name an LCD "Power HUD LCD", and optionally set "minBatt=25" in the Programmable Block CustomData.',
+      'Add "[Aux]" to non-essential blocks (assemblers, refineries, floodlights), name an LCD "Power HUD LCD", and optionally set "minBatt=25" in PB CustomData.',
     project: {
       name: 'Adaptive Power & Load Shedding',
-      description: 'Native-block grid power balancer using CustomData INI config, Math ops, Functions, compound If, and For-Each load shedding.',
+      description: 'Automatic grid power balancer with CustomData threshold, [Aux] load shedding, and backup reactor control.',
       updateFrequency: 'Update10',
       sameGridOnly: true,
       blocks: [
@@ -260,17 +259,16 @@ export const PRESET_SCRIPTS: PresetScript[] = [
   },
   {
     id: 'native-dynamic-battery-array',
-    name: 'Dynamic Per-Battery Array Monitor',
-    category: 'Native Logic',
+    name: 'Per-Battery Array Monitor',
+    category: 'Telemetry & HUD',
     difficulty: 'Advanced',
-    tier: 'native',
     summary:
-      '100% native loop-driven HUD: uses For Each Block inside a GUI Canvas to dynamically draw a live progress bar for EVERY battery on your grid ({_name}, {_value}), compute fleet average with Math, and manage charge mode.',
+      'Discovers every battery on your ship automatically, draws an individual charge bar for each unit, computes the fleet average, and returns low cells to Auto mode.',
     setupHint:
-      'Place an LCD Panel named "Battery Array LCD". Automatically discovers every battery on your ship — add or remove batteries and the HUD adapts without editing code!',
+      'Place an LCD Panel named "Battery Array LCD". Add or remove batteries on your ship and the display adapts automatically.',
     project: {
-      name: 'Dynamic Per-Battery Array Monitor',
-      description: 'Native For-Each loop dynamically rendering per-unit battery bars and computing live fleet average.',
+      name: 'Per-Battery Array Monitor',
+      description: 'Live per-unit battery HUD with fleet average calculation and low-cell recovery.',
       updateFrequency: 'Update10',
       sameGridOnly: true,
       blocks: [
@@ -355,16 +353,15 @@ export const PRESET_SCRIPTS: PresetScript[] = [
   {
     id: 'native-smart-door-sentinel',
     name: 'Auto-Door Closer & O2 Breach Sentinel',
-    category: 'Native Logic',
+    category: 'Airlocks & Safety',
     difficulty: 'Advanced',
-    tier: 'native',
     summary:
-      '100% native multi-routine safety script: Function #1 iterates all "[Auto]" doors to close any left open; Function #2 scans every Air Vent with Math.Min to find the lowest-pressure room and triggers breach alerts.',
+      'Automatically closes any [Auto] door left open, scans every Air Vent on the ship to find the lowest-pressure room, and triggers flashing bridge alerts on decompression.',
     setupHint:
-      'Add "[Auto]" to any doors you want auto-closed, name an LCD "Safety LCD", and optionally put "minO2=65" in the Programmable Block CustomData.',
+      'Add "[Auto]" to doors you want auto-closed, name an LCD "Safety LCD", and optionally set "minO2=65" in PB CustomData.',
     project: {
       name: 'Auto-Door Closer & O2 Breach Sentinel',
-      description: 'Native Functions + For-Each loops scanning [Auto] doors and all ship Air Vents for decompression.',
+      description: 'Auto-closes [Auto] doors and monitors all ship Air Vents for decompression breaches.',
       updateFrequency: 'Update10',
       sameGridOnly: true,
       blocks: [
